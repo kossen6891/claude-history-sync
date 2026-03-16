@@ -427,33 +427,42 @@ def get_conversation_title(jsonl_path: Path) -> str | None:
 
 
 def inject_custom_title(jsonl_path: Path, session_id: str, title: str):
-    """Append a custom-title entry to a JSONL if it doesn't already have one with this title."""
-    existing_title = None
-    try:
-        with open(jsonl_path, "r") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    entry = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                if entry.get("type") == "custom-title":
-                    existing_title = entry.get("customTitle")
-    except (OSError, UnicodeDecodeError):
-        pass
-
-    if existing_title == title:
-        return  # already has the right title
-
-    entry = {
+    """Set the custom-title in a JSONL file. Replaces existing custom-title if present."""
+    lines = []
+    found = False
+    new_entry = json.dumps({
         "type": "custom-title",
         "customTitle": title,
         "sessionId": session_id,
-    }
-    with open(jsonl_path, "a") as f:
-        f.write(json.dumps(entry) + "\n")
+    })
+    try:
+        with open(jsonl_path, "r") as f:
+            for line in f:
+                stripped = line.strip()
+                if not stripped:
+                    lines.append(line)
+                    continue
+                try:
+                    entry = json.loads(stripped)
+                except json.JSONDecodeError:
+                    lines.append(line)
+                    continue
+                if entry.get("type") == "custom-title":
+                    if entry.get("customTitle") == title:
+                        return  # already correct, don't rewrite
+                    # Replace with new title
+                    lines.append(new_entry + "\n")
+                    found = True
+                else:
+                    lines.append(line)
+    except (OSError, UnicodeDecodeError):
+        return
+
+    if not found:
+        lines.append(new_entry + "\n")
+
+    with open(jsonl_path, "w") as f:
+        f.writelines(lines)
 
 
 def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
