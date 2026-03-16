@@ -655,6 +655,15 @@ def main():
                 subdir_label = "." if rel_path == "." else rel_path
                 print(f"  ║ {subdir_label:<35s} {local_count:>2} local ({format_size(local_size):>8})  {remote_count:>2} remote ({format_size(remote_size):>8})")
 
+                if args.verbose:
+                    for jsonl_path in sorted(project_dir.glob("*.jsonl")):
+                        sid = jsonl_path.stem
+                        title = get_conversation_title(jsonl_path)
+                        size = format_size(jsonl_path.stat().st_size)
+                        mtime = format_time(jsonl_path.stat().st_mtime)
+                        title_str = f'"{title}"' if title else "(untitled)"
+                        print(f"  ║   ╰─ {sid[:8]}…  {title_str:<30s} {size:>8}  {mtime}")
+
                 pushed, pulled, skipped = sync_files(
                     service, subfolder_id, project_dir, args, indent="  ║   "
                 )
@@ -742,6 +751,15 @@ def main():
                     local_size = sum(p.stat().st_size for p in project_dir.glob("*.jsonl"))
 
                     print(f"  ║ {subdir_label:<35s} {local_count:>2} local ({format_size(local_size):>8})  {remote_count:>2} remote ({format_size(remote_size):>8})")
+
+                    if args.verbose:
+                        for jsonl_path in sorted(project_dir.glob("*.jsonl")):
+                            sid = jsonl_path.stem
+                            title = get_conversation_title(jsonl_path)
+                            size = format_size(jsonl_path.stat().st_size)
+                            mtime = format_time(jsonl_path.stat().st_mtime)
+                            title_str = f'"{title}"' if title else "(untitled)"
+                            print(f"  ║   ╰─ {sid[:8]}…  {title_str:<30s} {size:>8}  {mtime}")
 
                     pushed, pulled, skipped = sync_files(
                         service, subfolder_id, project_dir, args, indent="  ║   "
