@@ -677,7 +677,10 @@ def main():
                     service, subfolder_id, project_dir, args, indent="  ║   "
                 )
                 if pushed or pulled:
-                    print(f"  ║   => {pushed} pushed, {pulled} pulled, {skipped} unchanged")
+                    if args.dry_run:
+                        print(f"  ║   => would push {pushed}, would pull {pulled}, {skipped} unchanged")
+                    else:
+                        print(f"  ║   => {pushed} pushed, {pulled} pulled, {skipped} unchanged")
             print(B)
 
     # --- PULL: download from remote into matching local project dirs ---
@@ -774,7 +777,10 @@ def main():
                         service, subfolder_id, project_dir, args, indent="  ║   "
                     )
                     if pushed or pulled:
-                        print(f"  ║   => {pushed} pushed, {pulled} pulled, {skipped} unchanged")
+                        if args.dry_run:
+                            print(f"  ║   => would push {pushed}, would pull {pulled}, {skipped} unchanged")
+                        else:
+                            print(f"  ║   => {pushed} pushed, {pulled} pulled, {skipped} unchanged")
                 else:
                     print(f"  ║ {subdir_label:<35s} {'--':>17}  {remote_count:>2} remote ({format_size(remote_size):>8})  (no local project)")
             print(B)
