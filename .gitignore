@@ -1,0 +1,4 @@
+token.json
+__pycache__/
+# credentials.json and service-account.json are intentionally tracked
+# in this private repo so they're available on all machines
