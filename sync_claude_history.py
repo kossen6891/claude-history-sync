@@ -400,12 +400,79 @@ def format_time(ts: float) -> str:
     return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
 
 
+def get_conversation_title(jsonl_path: Path) -> str | None:
+    """Extract the conversation title from a JSONL file.
+
+    Looks for custom-title (user rename) first, falls back to slug (auto-generated).
+    """
+    custom_title = None
+    slug = None
+    try:
+        with open(jsonl_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "custom-title":
+                    custom_title = entry.get("customTitle")
+                if slug is None and "slug" in entry:
+                    slug = entry["slug"]
+    except (OSError, UnicodeDecodeError):
+        pass
+    return custom_title or slug
+
+
+def inject_custom_title(jsonl_path: Path, session_id: str, title: str):
+    """Append a custom-title entry to a JSONL if it doesn't already have one with this title."""
+    existing_title = None
+    try:
+        with open(jsonl_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "custom-title":
+                    existing_title = entry.get("customTitle")
+    except (OSError, UnicodeDecodeError):
+        pass
+
+    if existing_title == title:
+        return  # already has the right title
+
+    entry = {
+        "type": "custom-title",
+        "customTitle": title,
+        "sessionId": session_id,
+    }
+    with open(jsonl_path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
     """Sync .jsonl files between local_dir and a Drive folder. Returns (pushed, pulled, skipped)."""
     remote_files = list_remote_files(service, folder_id)
     local_jsons = {p.name: p for p in sorted(local_dir.glob("*.jsonl"))}
 
     pushed = pulled = skipped = 0
+
+    # Load/create titles mapping: {session_id: title}
+    titles_file = remote_files.get("_titles.json")
+    remote_titles = {}
+    if titles_file:
+        try:
+            remote_titles = json.loads(download_string(service, titles_file["id"]))
+        except (json.JSONDecodeError, Exception):
+            pass
+    local_titles = {}
+    titles_changed = False
 
     # Sync files that exist locally
     for fname, local_path in local_jsons.items():
@@ -450,6 +517,16 @@ def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
             print(f"    [{action}] {fname} ({format_size(local_size)}, {format_time(local_mtime)})")
             pushed += 1
 
+    # Extract titles from local files we just pushed (or all local files for title sync)
+    if not args.pull_only:
+        for fname, local_path in local_jsons.items():
+            session_id = fname.replace(".jsonl", "")
+            title = get_conversation_title(local_path)
+            if title:
+                if remote_titles.get(session_id) != title:
+                    remote_titles[session_id] = title
+                    titles_changed = True
+
     # Pull files that exist only on remote
     if not args.push_only:
         for fname, remote in remote_files.items():
@@ -463,8 +540,31 @@ def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
                 action = "WOULD PULL NEW" if args.dry_run else "PULLED NEW"
                 if not args.dry_run:
                     download_file(service, remote["id"], local_dir / fname)
+                    # Inject saved title into the downloaded conversation
+                    session_id = fname.replace(".jsonl", "")
+                    saved_title = remote_titles.get(session_id)
+                    if saved_title:
+                        inject_custom_title(local_dir / fname, session_id, saved_title)
                 print(f"{indent}[{action}] {fname} ({format_size(remote_size)}, {format_time(remote_mtime)})")
                 pulled += 1
+
+    # Also inject titles into existing local files that were pulled (updated)
+    if not args.push_only and not args.dry_run:
+        for fname, local_path in local_jsons.items():
+            session_id = fname.replace(".jsonl", "")
+            saved_title = remote_titles.get(session_id)
+            if saved_title:
+                inject_custom_title(local_path, session_id, saved_title)
+
+    # Upload updated titles mapping
+    if titles_changed and not args.dry_run:
+        upload_string(
+            service,
+            json.dumps(remote_titles, indent=2),
+            "_titles.json",
+            folder_id,
+            existing_id=titles_file["id"] if titles_file else None,
+        )
 
     return pushed, pulled, skipped
 
@@ -575,6 +675,7 @@ def main():
                     project_dir, git_root
                 )
 
+        pull_printed_first = False
         for url_key, repo_folder_id in sorted(remote_repo_folders.items()):
             # Already synced in push phase (bidirectional)?
             if url_key in git_projects and not args.pull_only:
@@ -600,7 +701,9 @@ def main():
                         if k.endswith(".jsonl")
                     )
                 B = "  ╠═══════════════════════════════════════════════════════════════════════════"
-                print(B)
+                if not pull_printed_first:
+                    print(B)
+                    pull_printed_first = True
                 print(f"  ║ {raw_url}  (no local clone)")
                 print(f"  ║ ----------------------------------------------------------------------")
                 print(f"  ║ {'.':<35s} {total_convos:>2} remote ({format_size(total_size):>8})")
@@ -610,12 +713,13 @@ def main():
             remote_subfolders = list_drive_folders(service, repo_folder_id)
 
             B = "  ╠═══════════════════════════════════════════════════════════════════════════"
-            # Find local git root for this repo
             pull_git_root = None
             for rp, (pd, gr) in local_map.items():
                 pull_git_root = gr
                 break
-            print(B)
+            if not pull_printed_first:
+                print(B)
+                pull_printed_first = True
             print(f"  ║ {raw_url}")
             if pull_git_root:
                 print(f"  ║   ╰─> {pull_git_root}")

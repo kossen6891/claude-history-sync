@@ -63,7 +63,7 @@ python sync_claude_history.py -v       # verbose output
 
 ```
 Found 4 projects with git remotes, 1 without
-  [SKIP no git] -sgl-workspace-cutlass-code-agent
+  [SKIP no git] -sgl-workspace-cutlass
   ╠═══════════════════════════════════════════════════════════════════════════
   ║ git@github.com:user/flashinfer.git
   ║   ╰─> /sgl-workspace/flashinfer
