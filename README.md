@@ -61,22 +61,56 @@ python sync_claude_history.py -v       # verbose output
 
 ### Example output
 
+**Default** (`--dry-run`):
+
 ```
-Found 4 projects with git remotes, 1 without
-  [SKIP no git] -sgl-workspace-cutlass
+Found 3 projects with git remotes, 1 without
+  [SKIP no git] -home-user-scratch
   ╠═══════════════════════════════════════════════════════════════════════════
-  ║ git@github.com:user/flashinfer.git
-  ║   ╰─> /sgl-workspace/flashinfer
+  ║ git@github.com:user/my-project.git
+  ║   ╰─> /home/user/my-project
   ║ ----------------------------------------------------------------------
-  ║ .                                    1 local (   4.8MB)   1 remote (   3.8MB)
-  ║   [WOULD PUSH] df9a6a22-...-.jsonl (4.8MB, 2026-03-16 23:14)
-  ║   => 1 pushed, 0 pulled, 0 unchanged
+  ║ .                                    2 local (   8.3MB)   1 remote (   3.1MB)
+  ║   [WOULD PUSH] a1b2c3d4-...-e5f6.jsonl (5.2MB, 2026-03-16 14:30)
+  ║   => 1 pushed, 0 pulled, 1 unchanged
   ╠═══════════════════════════════════════════════════════════════════════════
-  ║ git@github.com:org/flash-attention.git
-  ║   ╰─> /home/user/repos/flash-attention
+  ║ git@github.com:org/mono-repo.git
+  ║   ╰─> /home/user/mono-repo
   ║ ----------------------------------------------------------------------
-  ║ .                                    0 local (      0B)   0 remote (      0B)
-  ║ flash_attn/cute                      5 local ( 161.8MB)   5 remote ( 161.8MB)
+  ║ .                                    1 local (   2.1MB)   1 remote (   2.1MB)
+  ║ src/frontend                         3 local (  45.6MB)   2 remote (  12.0MB)
+  ║   [WOULD PUSH] f7e8d9c0-...-a1b2.jsonl (33.6MB, 2026-03-16 18:05)
+  ║   => 1 pushed, 0 pulled, 2 unchanged
+  ╠═══════════════════════════════════════════════════════════════════════════
+Done.
+```
+
+**Verbose** (`--dry-run -v`):
+
+```
+Found 3 projects with git remotes, 1 without
+  [SKIP no git] -home-user-scratch
+  ╠═══════════════════════════════════════════════════════════════════════════
+  ║ git@github.com:user/my-project.git
+  ║   ╰─> /home/user/my-project
+  ║ ----------------------------------------------------------------------
+  ║ .                                    2 local (   8.3MB)   1 remote (   3.1MB)
+  ║   ╰─ a1b2c3d4…  "refactor-auth-module"            5.2MB  2026-03-16 14:30
+  ║   ╰─ b2c3d4e5…  "fix-login-bug"                   3.1MB  2026-03-15 09:12
+  ║   [WOULD PUSH] a1b2c3d4-...-e5f6.jsonl (5.2MB, 2026-03-16 14:30)
+  ║   => 1 pushed, 0 pulled, 1 unchanged
+  ╠═══════════════════════════════════════════════════════════════════════════
+  ║ git@github.com:org/mono-repo.git
+  ║   ╰─> /home/user/mono-repo
+  ║ ----------------------------------------------------------------------
+  ║ .                                    1 local (   2.1MB)   1 remote (   2.1MB)
+  ║   ╰─ c3d4e5f6…  "update-ci-pipeline"              2.1MB  2026-03-14 11:00
+  ║ src/frontend                         3 local (  45.6MB)   2 remote (  12.0MB)
+  ║   ╰─ d4e5f6a7…  (untitled)                        1.2MB  2026-03-10 16:45
+  ║   ╰─ e5f6a7b8…  "debug-react-ssr"                11.8MB  2026-03-13 20:30
+  ║   ╰─ f7e8d9c0…  "perf-optimize-bundle"           33.6MB  2026-03-16 18:05
+  ║   [WOULD PUSH] f7e8d9c0-...-a1b2.jsonl (33.6MB, 2026-03-16 18:05)
+  ║   => 1 pushed, 0 pulled, 2 unchanged
   ╠═══════════════════════════════════════════════════════════════════════════
 Done.
 ```
