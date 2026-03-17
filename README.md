@@ -1,62 +1,84 @@
-# Claude Code History Sync
+<p align="center">
+  <img src="assets/claude-app-icon.png" width="120" alt="Claude">
+  <br><br>
+  <h1 align="center">🔄 Claude Code History Sync 🔄</h1>
+  <h3 align="center">🤩 Never lose a conversation again! Sync across all your machines via Google Drive ☁️</h3>
+</p>
 
-Sync Claude Code conversation history across machines via Google Drive, organized by git remote URL so conversations follow the repo regardless of local clone path.
+<p align="center">
+  <a href="#setup-one-time">🔧 Setup</a> •
+  <a href="#-usage">🚀 Usage</a> •
+  <a href="#-how-it-works">🧠 How it works</a> •
+  <a href="#-storage">💾 Storage</a>
+</p>
 
-## How it works
+---
+
+> 🤔 Ever SSH into a different machine and can't find that conversation where Claude wrote you the perfect kernel?
+
+Conversations are organized by **git remote URL**, so they follow the repo — not the local path. Clone `flashinfer` at `/home/alice/flashinfer` on your laptop and `/workspace/flashinfer` on a GPU box? ✨ Same conversations, synced automatically.
+
+🏷️ Conversation names (from `/rename`) are preserved across machines — no more mystery slugs like `fuzzy-dancing-penguin`!
+
+## 🧠 How it works
 
 ```
-Drive: claude-code-history/
-  github.com__org__repo/
-    _metadata.json
-    _root/              # conversations opened at repo root
-      abc123.jsonl
-    src__subdir/         # conversations opened in src/subdir/
-      def456.jsonl
+☁️ Google Drive: claude-code-history/
+  📁 github.com__org__repo/
+     📁 _root/              ← conversations opened at repo root
+        💬 abc123.jsonl
+     📁 src__subdir/         ← conversations opened in src/subdir/
+        💬 def456.jsonl
+     📄 _titles.json         ← 🏷️ conversation names
 ```
 
-- **Push**: Scans `~/.claude/projects/`, resolves each to its git remote, uploads conversations to the matching Drive folder + subfolder by relative path.
-- **Pull**: For each Drive folder, finds the local repo with the same git remote, downloads conversations into the correct `~/.claude/projects/` dir based on the relative path within the repo.
-- **Conflict resolution**: MD5 checksums skip identical files; when files differ, newer modification time wins.
-- Projects without a git remote are skipped (no way to match across machines).
+| | |
+|---|---|
+| ⬆️ **Push** | Scans `~/.claude/projects/`, resolves each to its git remote, uploads to the matching Drive folder + subfolder by relative path |
+| ⬇️ **Pull** | Finds the local repo with the same git remote, downloads into the correct `~/.claude/projects/` dir |
+| 🔄 **Sync** | MD5 checksums skip identical files; when files differ, newer modification time wins |
+| 🏷️ **Names** | Conversation titles (from `/rename`) are synced via `_titles.json` and injected on pull |
 
-## Setup (one-time)
+> 🙈 Projects without a git remote are skipped (no way to match across machines).
 
-### 1. Google Cloud Console
+## 🔧 Setup (one-time)
+
+### 1️⃣ Google Cloud Console
 
 1. Go to [console.cloud.google.com](https://console.cloud.google.com)
 2. Create or select a project
-3. **APIs & Services > Library** > search "Google Drive API" > **Enable**
-4. **APIs & Services > Credentials** > **Create Credentials > OAuth client ID**
+3. **APIs & Services → Library** → search "Google Drive API" → **Enable**
+4. **APIs & Services → Credentials** → **Create Credentials → OAuth client ID**
 5. If prompted, configure **OAuth consent screen**: User type = External, add your email as test user
-6. Application type: **Desktop app** > Create > **Download JSON**
+6. Application type: **Desktop app** → Create → **Download JSON**
 7. Save as `credentials.json` in this directory
 
-### 2. Install dependencies
+### 2️⃣ Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. First run (needs browser once)
+### 3️⃣ First run
 
 ```bash
 python sync_claude_history.py
 ```
 
-Opens a browser for OAuth consent, saves `token.json` locally. Subsequent runs reuse the token.
+Opens a browser for OAuth consent, saves `token.json` locally. Subsequent runs reuse the token. 🎉
 
-**Headless machines**: If no browser is available, it prints a URL to open on any device. Paste the authorization code back into the terminal.
+> 🖥️ **Headless machines**: No browser? No problem! It prints a URL to open on any device. Paste the authorization code back.
+>
+> 💻 **Multiple machines**: Either run the OAuth flow on each machine, or copy `token.json` from one that has it.
 
-**Multiple machines**: Either run the OAuth flow on each machine, or copy `token.json` from a machine that has it.
-
-## Usage
+## 🚀 Usage
 
 ```bash
-python sync_claude_history.py          # bidirectional sync (newer wins)
-python sync_claude_history.py --push   # upload only
-python sync_claude_history.py --pull   # download only
-python sync_claude_history.py --dry-run  # preview what would happen
-python sync_claude_history.py -v       # verbose output
+python sync_claude_history.py              # 🔄 bidirectional sync (newer wins)
+python sync_claude_history.py --push       # ⬆️  upload only
+python sync_claude_history.py --pull       # ⬇️  download only
+python sync_claude_history.py --dry-run    # 👀 preview what would happen
+python sync_claude_history.py -v           # 📋 verbose: list each conversation
 ```
 
 ### Example output
@@ -115,6 +137,6 @@ Found 3 projects with git remotes, 1 without
 Done.
 ```
 
-## Storage
+## 💾 Storage
 
-Google Drive free tier: 15GB. Claude conversation files are typically 1-50MB each. Monitor usage at [drive.google.com/settings/storage](https://drive.google.com/settings/storage).
+Google Drive free tier gives **15GB**. Claude conversation files are typically 1–50MB each. Monitor usage at [drive.google.com/settings/storage](https://drive.google.com/settings/storage).
