@@ -69,7 +69,9 @@ python sync_claude_history.py
 
 Opens a browser for OAuth consent, saves `token.json` locally. Subsequent runs reuse the token. 🎉
 
-> 🖥️ **Headless machines**: No browser? No problem! It prints a URL to open on any device. Paste the authorization code back.
+> 🖥️ **Headless / SSH**: No browser? No problem! It prints a URL — open on any device, paste the auth code back.
+>
+> 🌐 **Web VS Code** (code-server, Codespaces): Forward port `8090` first (Ctrl+Shift+P → "Forward a Port" → `8090`), then run the script and open the printed URL in your local browser.
 >
 > 💻 **Multiple machines**: Either run the OAuth flow on each machine, or copy `token.json` from one that has it.
 
