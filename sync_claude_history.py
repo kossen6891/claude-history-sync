@@ -89,10 +89,9 @@ def get_drive_service():
                 str(CREDENTIALS_PATH), SCOPES
             )
             try:
-                # Use fixed port so it can be port-forwarded in web VS Code
-                creds = flow.run_local_server(port=8090, open_browser=False)
+                creds = flow.run_local_server(port=0)
             except OSError:
-                # Port in use or headless — use console-based flow
+                # Headless: no browser available, use console-based flow
                 print("No browser available. Visit this URL on any device:")
                 auth_url, _ = flow.authorization_url(prompt="consent")
                 print(f"\n  {auth_url}\n")
