@@ -40,6 +40,8 @@ Conversations are organized by **git remote URL**, so they follow the repo — n
 | 🏷️ **Names** | Conversation titles (from `/rename`) are synced via `_titles.json` and injected on pull |
 
 > 🙈 Projects without a git remote are skipped (no way to match across machines).
+>
+> 🗑️ Empty conversations (immediate exit, `/resume` only) are automatically skipped.
 
 ## 🔧 Setup (one-time)
 

@@ -379,6 +379,30 @@ def build_local_index() -> dict:
 # File-level sync logic
 # ---------------------------------------------------------------------------
 
+def is_empty_conversation(jsonl_path: Path) -> bool:
+    """Check if a conversation is empty (no assistant response).
+
+    Empty conversations are created when you open Claude and immediately exit,
+    or only type /resume. They contain only file-history-snapshot, user meta,
+    and local-command entries, but no assistant messages.
+    """
+    try:
+        with open(jsonl_path, "r") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    entry = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if entry.get("type") == "assistant":
+                    return False
+    except (OSError, UnicodeDecodeError):
+        pass
+    return True
+
+
 def local_file_md5(path: Path) -> str:
     h = hashlib.md5()
     with open(path, "rb") as f:
@@ -468,7 +492,8 @@ def inject_custom_title(jsonl_path: Path, session_id: str, title: str):
 def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
     """Sync .jsonl files between local_dir and a Drive folder. Returns (pushed, pulled, skipped)."""
     remote_files = list_remote_files(service, folder_id)
-    local_jsons = {p.name: p for p in sorted(local_dir.glob("*.jsonl"))}
+    local_jsons = {p.name: p for p in sorted(local_dir.glob("*.jsonl"))
+                   if not is_empty_conversation(p)}
 
     pushed = pulled = skipped = 0
 
@@ -652,8 +677,9 @@ def main():
                     service, subfolder_name, repo_folder_id
                 )
 
-                local_count = len(list(project_dir.glob("*.jsonl")))
-                local_size = sum(p.stat().st_size for p in project_dir.glob("*.jsonl"))
+                local_jsonls = [p for p in project_dir.glob("*.jsonl") if not is_empty_conversation(p)]
+                local_count = len(local_jsonls)
+                local_size = sum(p.stat().st_size for p in local_jsonls)
                 remote_sub_files = list_remote_files(service, subfolder_id)
                 remote_count = sum(1 for k in remote_sub_files if k.endswith(".jsonl"))
                 remote_size = sum(
@@ -665,7 +691,7 @@ def main():
                 print(f"  ║ {subdir_label:<35s} {local_count:>2} local ({format_size(local_size):>8})  {remote_count:>2} remote ({format_size(remote_size):>8})")
 
                 if args.verbose:
-                    for jsonl_path in sorted(project_dir.glob("*.jsonl")):
+                    for jsonl_path in sorted(local_jsonls):
                         sid = jsonl_path.stem
                         title = get_conversation_title(jsonl_path)
                         size = format_size(jsonl_path.stat().st_size)
