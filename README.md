@@ -38,7 +38,7 @@ Conversations are organized by **git remote URL**, so they follow the repo — n
 | ⬇️ **Pull** | Finds the local repo with the same git remote, downloads into the correct `~/.claude/projects/` dir |
 | 🔄 **Sync** | MD5 checksums skip identical files; when files differ, newer modification time wins |
 | 🏷️ **Names** | Conversation titles (from `/rename`) are synced via `_titles.json` and injected on pull |
-| 🗑️ **Delete** | Remove conversations from Drive with `--delete --repo <name>`, optionally filtered by `--chat_id` |
+| 🗑️ **Delete** | Remove conversations from Drive with `--delete --repo <name>`, optionally filtered by `--chat` |
 
  🙈 Projects without a git remote are skipped (no way to match across machines).
 
@@ -86,11 +86,11 @@ python sync_claude_history.py --dry-run                 # 👀 preview what woul
 python sync_claude_history.py --dry-run -v              # 📋 verbose: list each conversation
 python sync_claude_history.py --repo flashinfer         # 🎯 filter to specific repo(s)
 python sync_claude_history.py --repo flash,sglang       # 🎯 comma-separated repo filters
-python sync_claude_history.py --chat_id df9a6a22        # 💬 filter to specific conversation(s)
-python sync_claude_history.py --chat_id df9a,e520       # 💬 comma-separated chat ID prefixes
+python sync_claude_history.py --chat df9a6a22        # 💬 filter to specific conversation(s)
+python sync_claude_history.py --chat df9a,e520       # 💬 comma-separated chat ID prefixes
 python sync_claude_history.py --delete --repo sglang    # 🗑️  delete all conversations for a repo
 python sync_claude_history.py --delete --repo sglang --dry-run # 🗑️  preview delete
-python sync_claude_history.py --delete --repo sgl --chat_id df9a  # 🗑️  delete specific chat
+python sync_claude_history.py --delete --repo sgl --chat df9a  # 🗑️  delete specific chat
 ```
 
 ### Example output

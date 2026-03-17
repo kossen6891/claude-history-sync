@@ -677,7 +677,7 @@ def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
     local_jsons = {p.name: p for p in sorted(local_dir.glob("*.jsonl"))
                    if not is_empty_conversation(p)}
 
-    # Filter by --chat if specified
+    # Filter by --chat if specified (dest=chat_id)
     chat_ids = getattr(args, "chat_id", None)
     chat_filters = [c.strip() for c in chat_ids.split(",")] if chat_ids else None
     if chat_filters:
@@ -803,12 +803,12 @@ def main():
     parser.add_argument("--pull", dest="pull_only", action="store_true", help="Only download")
     parser.add_argument("--push", dest="push_only", action="store_true", help="Only upload")
     parser.add_argument("--delete", action="store_true",
-                        help="Delete conversations from Drive (use with --repo and/or --chat_id)")
+                        help="Delete conversations from Drive (use with --repo and/or --chat)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--repo", type=str, default=None,
                         help="Filter to repo(s) (comma-separated, substring match on git remote URL)")
-    parser.add_argument("--chat_id", type=str, default=None,
+    parser.add_argument("--chat", type=str, default=None, dest="chat_id",
                         help="Filter to conversation(s) (comma-separated, first 8+ chars of session ID)")
     args = parser.parse_args()
 
@@ -867,7 +867,7 @@ def main():
                 print(f"No matching conversations to delete for {raw_url}")
                 continue
 
-            # Require confirmation for repo-wide delete (no --chat_id)
+            # Require confirmation for repo-wide delete (no --chat)
             if not chat_filters:
                 print(f"About to delete {len(to_delete)} conversations from {raw_url}:")
                 for _, sub, fname, _ in to_delete:

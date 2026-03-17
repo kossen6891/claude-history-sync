@@ -37,7 +37,7 @@ Check that:
 - For related changes to one feature, squash into one commit instead of committing multiple times for compact history
 - Update `CHANGELOG.md` with every commit under the current version section
 - Keep changelog entries as single-line bullet points
-- Update `README.md` when adding new flags, features, or changing output format
+- Update `README.md` when adding, renaming, or removing flags, features, or changing output format
 
 ### Code Style
 
