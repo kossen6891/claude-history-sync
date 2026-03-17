@@ -40,11 +40,11 @@ Conversations are organized by **git remote URL**, so they follow the repo — n
 | 🏷️ **Names** | Conversation titles (from `/rename`) are synced via `_titles.json` and injected on pull |
 | 🗑️ **Delete** | Remove conversations from Drive with `--delete --repo <name>`, optionally filtered by `--chat_id` |
 
-> 🙈 Projects without a git remote are skipped (no way to match across machines).
->
-> 🗑️ Empty conversations (immediate exit, `/resume` only) are automatically skipped.
->
-> 🔍 **Cross-machine matching**: When a conversation was created on a different machine (different local path), the script scans repos in the **parent directory** of `claude-history-sync` to find matching git remotes. **Clone this repo next to your other repos** for automatic discovery.
+ 🙈 Projects without a git remote are skipped (no way to match across machines).
+
+ 🗑️ Empty conversations (immediate exit, `/resume` only) are automatically skipped.
+
+ 🔍 **Cross-machine matching**: When a conversation was created on a different machine (different local path), the script scans repos in the **parent directory** of `claude-history-sync` to find matching git remotes. **Clone this repo next to your other repos** for automatic discovery.
 
 ## 🔧 Setup (one-time)
 
@@ -80,7 +80,7 @@ Opens a browser for OAuth consent, saves `token.json` locally. Subsequent runs r
 
 ```bash
 python sync_claude_history.py                           # 🔄 bidirectional sync (newer wins)
-python sync_claude_history.py --push                    # ⬆️  upload only
+python sync_claude_history.py --push                    # ⬆️  upload onlyf
 python sync_claude_history.py --pull                    # ⬇️  download only
 python sync_claude_history.py --dry-run                 # 👀 preview what would happen
 python sync_claude_history.py --dry-run -v              # 📋 verbose: list each conversation
