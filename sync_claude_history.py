@@ -343,6 +343,9 @@ def drive_subfolder_to_rel_path(subfolder: str) -> str:
     return subfolder.replace("__", "/")
 
 
+REPO_CACHE_PATH = SCRIPT_DIR / ".repo_cache.json"
+
+
 def scan_local_git_repos() -> dict:
     """Scan the parent directory of this script's repo for all git repos.
 
@@ -357,11 +360,23 @@ def scan_local_git_repos() -> dict:
             if git_url:
                 key = normalize_git_url(git_url)
                 repos[key] = (git_root, git_url)
-            # Don't descend into .git or nested repos' subdirs
-            # (but do descend into subdirs that might contain subrepos)
-        # Skip hidden dirs and common non-repo dirs
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
     return repos
+
+
+def load_repo_cache() -> dict:
+    """Load cached project_dir_name -> {git_root, git_url, rel_path} mapping."""
+    if REPO_CACHE_PATH.exists():
+        try:
+            return json.loads(REPO_CACHE_PATH.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_repo_cache(cache: dict):
+    """Save project_dir_name -> resolved info cache."""
+    REPO_CACHE_PATH.write_text(json.dumps(cache, indent=2))
 
 
 def build_local_index() -> dict:
@@ -374,8 +389,8 @@ def build_local_index() -> dict:
     - rel_path: path from git_root to the project dir (e.g. '.' or 'flash_attn/cute')
     Projects without a git remote are grouped under key None.
     """
-    # First try path resolution, then fall back to scanning local repos
-    local_repos = None  # lazy-loaded
+    repo_cache = load_repo_cache()
+    cache_changed = False
 
     index = {}
     if not CLAUDE_PROJECTS_DIR.exists():
@@ -388,44 +403,141 @@ def build_local_index() -> dict:
         git_root = find_git_root(fs_path) if fs_path else None
         git_url = get_git_remote(git_root) if git_root else None
 
-        # Fallback: path from another machine can't be resolved locally.
-        # Scan sibling repos to find one with a matching remote.
-        if not git_url and fs_path is None:
-            if local_repos is None:
-                local_repos = scan_local_git_repos()
-
-            # Extract repo name hint from the project dir name
-            # e.g. -mlx-devbox-users-foo-sglang -> last segment "sglang"
-            segments = d.name.lstrip("-").split("-")
-            # Try matching by repo name (last segment or last few segments)
-            for key, (gr, gu) in local_repos.items():
-                repo_basename = Path(gr).name.lower()
-                # Check if the project dir name ends with the repo name
-                if segments and segments[-1].lower() == repo_basename:
-                    git_root = gr
-                    git_url = gu
-                    fs_path = gr  # best guess: repo root
-                    break
-                # Also try matching with hyphenated repo names like flash-attention
-                for i in range(max(0, len(segments) - 3), len(segments)):
-                    candidate = "-".join(segments[i:]).lower()
-                    if candidate == repo_basename:
-                        git_root = gr
-                        git_url = gu
-                        fs_path = gr
-                        break
-                if git_url:
-                    break
+        # Fallback: check cache from a previous run
+        if not git_url and d.name in repo_cache:
+            cached = repo_cache[d.name]
+            cached_root = cached.get("git_root")
+            if cached_root and Path(cached_root).is_dir():
+                git_root = cached_root
+                git_url = get_git_remote(git_root)
+                fs_path = cached_root
+                rel_path_cached = cached.get("rel_path", ".")
+                if rel_path_cached != ".":
+                    candidate = os.path.join(git_root, rel_path_cached)
+                    if Path(candidate).is_dir():
+                        fs_path = candidate
 
         if git_url and git_root and fs_path:
             key = normalize_git_url(git_url)
             rel_path = os.path.relpath(fs_path, git_root)
+            if d.name not in repo_cache or repo_cache[d.name].get("git_root") != git_root:
+                repo_cache[d.name] = {
+                    "git_root": git_root,
+                    "git_url": git_url,
+                    "rel_path": rel_path,
+                }
+                cache_changed = True
         else:
             key = None
             rel_path = None
 
         index.setdefault(key, []).append((d, git_url, git_root, rel_path))
+
+    if cache_changed:
+        save_repo_cache(repo_cache)
     return index
+
+
+def resolve_unmatched_projects(index):
+    """Resolve unresolved projects by scanning local sibling repos for matching git remotes.
+
+    For projects from other machines where the encoded path doesn't exist locally,
+    scan repos in the parent directory of this script to find one whose git remote
+    matches. The project dir name ends with the repo name, so we match on that.
+    Once matched, we try to reconstruct the relative path within the repo.
+    """
+    unresolved = index.pop(None, [])
+    if not unresolved:
+        return
+
+    local_repos = scan_local_git_repos()
+    if not local_repos:
+        index.setdefault(None, []).extend(unresolved)
+        return
+
+    # Build reverse index: repo basename -> [(normalized_url, git_root, raw_url)]
+    # to match project dir names that end with the repo name
+    repos_by_name = {}
+    for norm_url, (git_root, raw_url) in local_repos.items():
+        basename = Path(git_root).name.lower()
+        repos_by_name.setdefault(basename, []).append((norm_url, git_root, raw_url))
+
+    repo_cache = load_repo_cache()
+    cache_changed = False
+    still_unresolved = []
+
+    for project_dir, _, _, _ in unresolved:
+        segments = project_dir.name.lstrip("-").split("-")
+        matched = False
+
+        # Try matching the tail of the project dir name against repo basenames
+        # e.g. -mlx-devbox-users-foo-playground-sglang -> try "sglang"
+        # e.g. -mlx-devbox-...-flash-attention-fp4 -> try "fp4", "attention-fp4", "flash-attention-fp4"
+        for i in range(len(segments) - 1, max(0, len(segments) - 5) - 1, -1):
+            candidate_name = "-".join(segments[i:]).lower()
+            if candidate_name in repos_by_name:
+                norm_url, git_root, raw_url = repos_by_name[candidate_name][0]
+
+                # Reconstruct relative path: everything between repo name and
+                # the end of the project dir path. The segments before the repo
+                # name are the machine path, segments after (if any) are subdirs.
+                # For now, assume repo root unless we can resolve further.
+                rel_path = "."
+
+                # Try to resolve subdir within the repo from remaining segments
+                # The repo name matched at position i, so segments after a possible
+                # repo-name match could be subdirs
+                # e.g. -...-flash-attention-fp4-flash-attn-cute
+                #   repo = flash-attention-fp4 (matched at i)
+                #   remaining after repo = flash-attn-cute -> flash_attn/cute
+                repo_segments = candidate_name.split("-")
+                repo_end_idx = i + len(repo_segments)
+                if repo_end_idx < len(segments):
+                    remaining = segments[repo_end_idx:]
+                    # Try to resolve remaining as a subpath within the repo
+                    from sync_claude_history import resolve_claude_project_path
+                    # Build candidate subpaths
+                    sub_encoded = "-".join(remaining)
+                    # Try each combo of - / _ / / for the remaining segments
+                    def _resolve_sub(pos, current):
+                        if pos == len(remaining):
+                            full = os.path.join(git_root, current) if current else git_root
+                            if Path(full).is_dir():
+                                return current or "."
+                            return None
+                        seg = remaining[pos]
+                        for sep in ["/", "-", "_"]:
+                            cand = (current + sep + seg) if current else seg
+                            result = _resolve_sub(pos + 1, cand)
+                            if result:
+                                return result
+                        return None
+
+                    resolved_sub = _resolve_sub(0, "")
+                    if resolved_sub:
+                        rel_path = resolved_sub
+
+                key = norm_url
+                index.setdefault(key, []).append(
+                    (project_dir, raw_url, git_root, rel_path)
+                )
+                repo_cache[project_dir.name] = {
+                    "git_root": git_root,
+                    "git_url": raw_url,
+                    "rel_path": rel_path,
+                }
+                cache_changed = True
+                matched = True
+                break
+
+        if not matched:
+            still_unresolved.append((project_dir, None, None, None))
+
+    if still_unresolved:
+        index.setdefault(None, []).extend(still_unresolved)
+
+    if cache_changed:
+        save_repo_cache(repo_cache)
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +789,11 @@ def main():
 
     # Build local index: git_url_key -> [(project_dir, raw_git_url), ...]
     local_index = build_local_index()
+
+    # Resolve unmatched projects (from other machines) by scanning sibling repos
+    if None in local_index:
+        resolve_unmatched_projects(local_index)
+
     git_projects = {k: v for k, v in local_index.items() if k is not None}
     no_git = local_index.get(None, [])
 

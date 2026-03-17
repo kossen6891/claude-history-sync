@@ -42,6 +42,8 @@ Conversations are organized by **git remote URL**, so they follow the repo — n
 > 🙈 Projects without a git remote are skipped (no way to match across machines).
 >
 > 🗑️ Empty conversations (immediate exit, `/resume` only) are automatically skipped.
+>
+> 🔍 **Cross-machine matching**: When a conversation was created on a different machine (different local path), the script scans repos in the **parent directory** of `claude-history-sync` to find matching git remotes. **Clone this repo next to your other repos** for automatic discovery.
 
 ## 🔧 Setup (one-time)
 
