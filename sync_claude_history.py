@@ -888,6 +888,7 @@ def main():
     #         abc.jsonl
     #       flash_attn__cute/         # conversations in flash_attn/cute/
     #         def.jsonl
+    push_printed_any = False
     if not args.pull_only:
         for url_key, entries in sorted(git_projects.items()):
             raw_url = entries[0][1]
@@ -914,8 +915,9 @@ def main():
             )
 
             B = "  ╠═══════════════════════════════════════════════════════════════════════════"
-            if url_key == sorted(git_projects.keys())[0]:
+            if not push_printed_any:
                 print(B)
+                push_printed_any = True
             git_root = entries[0][2]
             print(f"  ║ {raw_url}")
             print(f"  ║   ╰─> {git_root}")
@@ -971,7 +973,7 @@ def main():
                     project_dir, git_root
                 )
 
-        pull_printed_first = False
+        pull_printed_first = push_printed_any
         for url_key, repo_folder_id in sorted(remote_repo_folders.items()):
             # Already synced in push phase (bidirectional)?
             if url_key in git_projects and not args.pull_only:
@@ -1006,6 +1008,7 @@ def main():
                 print(f"  ║ {raw_url}  (no local clone)")
                 print(f"  ║ ----------------------------------------------------------------------")
                 print(f"  ║ {'.':<35s} {total_convos:>2} remote ({format_size(total_size):>8})")
+                print(B)
                 continue
 
             local_map = local_by_url[url_key]

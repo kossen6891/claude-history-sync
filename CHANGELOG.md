@@ -2,6 +2,7 @@
 
 ## v0.1.5
 
+- Fix missing bottom border and doubled separator between push/pull sections in output
 - Add `--repo` filter (comma-separated, substring match on git remote URL)
 - Add `--chat_id` filter (comma-separated, prefix match on session ID)
 - Add `--delete` to remove conversations from Drive (repo-wide delete requires confirmation)
