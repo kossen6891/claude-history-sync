@@ -14,7 +14,7 @@
 
 ---
 
-> 🤔 Ever SSH into a different machine and can't find that conversation where Claude wrote you the perfect kernel?
+ 🤔 Ever SSH into a different machine and can't find that conversation where Claude wrote you the perfect kernel?
 
 Conversations are organized by **git remote URL**, so they follow the repo — not the local path. Clone `flashinfer` at `/home/alice/flashinfer` on your laptop and `/workspace/flashinfer` on a GPU box? ✨ Same conversations, synced automatically.
 
