@@ -350,9 +350,12 @@ def scan_local_git_repos() -> dict:
     """Scan the parent directory of this script's repo for all git repos.
 
     Returns: {normalized_git_url: (git_root, raw_url)}
+    Only scans up to 3 levels deep to avoid traversing huge source trees.
     """
     scan_root = SCRIPT_DIR.parent
     repos = {}
+    max_depth = 3
+    root_depth = str(scan_root).count(os.sep)
     for dirpath, dirnames, _ in os.walk(scan_root):
         if ".git" in dirnames:
             git_root = dirpath
@@ -360,6 +363,12 @@ def scan_local_git_repos() -> dict:
             if git_url:
                 key = normalize_git_url(git_url)
                 repos[key] = (git_root, git_url)
+            dirnames.clear()
+            continue
+        current_depth = dirpath.count(os.sep) - root_depth
+        if current_depth >= max_depth:
+            dirnames.clear()
+            continue
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
     return repos
 
