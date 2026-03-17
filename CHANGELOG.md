@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.1.5
+
+- Add `--repo` filter (comma-separated, substring match on git remote URL)
+- Add `--chat_id` filter (comma-separated, prefix match on session ID)
+- Add `--delete` to remove conversations from Drive (repo-wide delete requires confirmation)
+- Skip empty conversations (no assistant response) during sync
+- Cross-machine project resolution: scan sibling repos and match by git remote, cache results in `.repo_cache.json`
+
 ## v0.1.1
 
 - Sync conversation titles (custom-title / slug) across machines via `_titles.json`; on pull, inject title into downloaded JSONL so conversations show named in `/resume`

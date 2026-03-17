@@ -654,11 +654,26 @@ def inject_custom_title(jsonl_path: Path, session_id: str, title: str):
         f.writelines(lines)
 
 
+def repo_matches_filter(raw_url: str, repo_filter: str | None) -> bool:
+    """Check if a git remote URL matches the --repo filter (comma-separated substring match)."""
+    if repo_filter is None:
+        return True
+    url_lower = raw_url.lower()
+    return any(f.strip().lower() in url_lower for f in repo_filter.split(","))
+
+
 def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
     """Sync .jsonl files between local_dir and a Drive folder. Returns (pushed, pulled, skipped)."""
     remote_files = list_remote_files(service, folder_id)
     local_jsons = {p.name: p for p in sorted(local_dir.glob("*.jsonl"))
                    if not is_empty_conversation(p)}
+
+    # Filter by --chat if specified
+    chat_ids = getattr(args, "chat_id", None)
+    chat_filters = [c.strip() for c in chat_ids.split(",")] if chat_ids else None
+    if chat_filters:
+        local_jsons = {k: v for k, v in local_jsons.items()
+                       if any(k.startswith(c) for c in chat_filters)}
 
     pushed = pulled = skipped = 0
 
@@ -713,7 +728,7 @@ def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
                     body={"name": fname, "parents": [folder_id]},
                     media_body=media,
                 ).execute()
-            print(f"    [{action}] {fname} ({format_size(local_size)}, {format_time(local_mtime)})")
+            print(f"{indent}[{action}] {fname} ({format_size(local_size)}, {format_time(local_mtime)})")
             pushed += 1
 
     # Extract titles from local files we just pushed (or all local files for title sync)
@@ -730,6 +745,8 @@ def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
     if not args.push_only:
         for fname, remote in remote_files.items():
             if fname.startswith("_") or not fname.endswith(".jsonl"):
+                continue
+            if chat_filters and not any(fname.startswith(c) for c in chat_filters):
                 continue
             if fname not in local_jsons:
                 remote_size = int(remote.get("size", 0))
@@ -776,9 +793,19 @@ def main():
     parser = argparse.ArgumentParser(description="Sync Claude Code history via Google Drive")
     parser.add_argument("--pull", dest="pull_only", action="store_true", help="Only download")
     parser.add_argument("--push", dest="push_only", action="store_true", help="Only upload")
+    parser.add_argument("--delete", action="store_true",
+                        help="Delete conversations from Drive (use with --repo and/or --chat_id)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen")
     parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--repo", type=str, default=None,
+                        help="Filter to repo(s) (comma-separated, substring match on git remote URL)")
+    parser.add_argument("--chat_id", type=str, default=None,
+                        help="Filter to conversation(s) (comma-separated, first 8+ chars of session ID)")
     args = parser.parse_args()
+
+    if args.delete and not args.repo:
+        print("ERROR: --delete requires --repo")
+        sys.exit(1)
 
     if not CLAUDE_PROJECTS_DIR.exists():
         print(f"No Claude projects dir at {CLAUDE_PROJECTS_DIR}")
@@ -802,6 +829,56 @@ def main():
     for d, _, _, _ in no_git:
         print(f"  [SKIP no git] {d.name}")
 
+    # --- DELETE: remove conversations from Drive ---
+    if args.delete:
+        chat_filters = [c.strip() for c in args.chat_id.split(",")] if args.chat_id else None
+        remote_repo_folders = list_drive_folders(service, root_folder_id)
+        for url_key, folder_id in remote_repo_folders.items():
+            repo_files = list_remote_files(service, folder_id)
+            meta_file = repo_files.get("_metadata.json")
+            raw_url = url_key
+            if meta_file:
+                meta = json.loads(download_string(service, meta_file["id"]))
+                raw_url = meta.get("remote_url", url_key)
+            if not repo_matches_filter(raw_url, args.repo):
+                continue
+
+            subfolders = list_drive_folders(service, folder_id)
+            to_delete = []
+            for sub_name, sub_id in subfolders.items():
+                sub_files = list_remote_files(service, sub_id)
+                for fname, finfo in sub_files.items():
+                    if not fname.endswith(".jsonl"):
+                        continue
+                    if chat_filters and not any(fname.startswith(c) for c in chat_filters):
+                        continue
+                    to_delete.append((raw_url, sub_name, fname, finfo["id"]))
+
+            if not to_delete:
+                print(f"No matching conversations to delete for {raw_url}")
+                continue
+
+            # Require confirmation for repo-wide delete (no --chat_id)
+            if not chat_filters:
+                print(f"About to delete {len(to_delete)} conversations from {raw_url}:")
+                for _, sub, fname, _ in to_delete:
+                    print(f"  {sub}/{fname}")
+                if not args.dry_run:
+                    confirm = input("Type 'yes' to confirm: ").strip()
+                    if confirm != "yes":
+                        print("Aborted.")
+                        continue
+
+            for _, sub, fname, file_id in to_delete:
+                if args.dry_run:
+                    print(f"  [WOULD DELETE] {sub}/{fname}")
+                else:
+                    service.files().delete(fileId=file_id).execute()
+                    print(f"  [DELETED] {sub}/{fname}")
+
+        print("Done.")
+        sys.exit(0)
+
     # --- PUSH: upload organized by git remote + relative path subfolder ---
     # Drive structure:
     #   claude-code-history/
@@ -813,8 +890,10 @@ def main():
     #         def.jsonl
     if not args.pull_only:
         for url_key, entries in sorted(git_projects.items()):
-            repo_folder_id = get_or_create_folder(service, url_key, root_folder_id)
             raw_url = entries[0][1]
+            if not repo_matches_filter(raw_url, args.repo):
+                continue
+            repo_folder_id = get_or_create_folder(service, url_key, root_folder_id)
 
             # Update metadata
             meta = {
@@ -905,6 +984,9 @@ def main():
             if meta_file:
                 meta = json.loads(download_string(service, meta_file["id"]))
                 raw_url = meta.get("remote_url", url_key)
+
+            if not repo_matches_filter(raw_url, args.repo):
+                continue
 
             if url_key not in local_by_url:
                 remote_subfolders = list_drive_folders(service, repo_folder_id)
