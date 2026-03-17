@@ -343,6 +343,27 @@ def drive_subfolder_to_rel_path(subfolder: str) -> str:
     return subfolder.replace("__", "/")
 
 
+def scan_local_git_repos() -> dict:
+    """Scan the parent directory of this script's repo for all git repos.
+
+    Returns: {normalized_git_url: (git_root, raw_url)}
+    """
+    scan_root = SCRIPT_DIR.parent
+    repos = {}
+    for dirpath, dirnames, _ in os.walk(scan_root):
+        if ".git" in dirnames:
+            git_root = dirpath
+            git_url = get_git_remote(git_root)
+            if git_url:
+                key = normalize_git_url(git_url)
+                repos[key] = (git_root, git_url)
+            # Don't descend into .git or nested repos' subdirs
+            # (but do descend into subdirs that might contain subrepos)
+        # Skip hidden dirs and common non-repo dirs
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+    return repos
+
+
 def build_local_index() -> dict:
     """Scan all local claude project dirs.
 
@@ -353,6 +374,9 @@ def build_local_index() -> dict:
     - rel_path: path from git_root to the project dir (e.g. '.' or 'flash_attn/cute')
     Projects without a git remote are grouped under key None.
     """
+    # First try path resolution, then fall back to scanning local repos
+    local_repos = None  # lazy-loaded
+
     index = {}
     if not CLAUDE_PROJECTS_DIR.exists():
         return index
@@ -363,6 +387,35 @@ def build_local_index() -> dict:
         fs_path = resolve_claude_project_path(d.name)
         git_root = find_git_root(fs_path) if fs_path else None
         git_url = get_git_remote(git_root) if git_root else None
+
+        # Fallback: path from another machine can't be resolved locally.
+        # Scan sibling repos to find one with a matching remote.
+        if not git_url and fs_path is None:
+            if local_repos is None:
+                local_repos = scan_local_git_repos()
+
+            # Extract repo name hint from the project dir name
+            # e.g. -mlx-devbox-users-foo-sglang -> last segment "sglang"
+            segments = d.name.lstrip("-").split("-")
+            # Try matching by repo name (last segment or last few segments)
+            for key, (gr, gu) in local_repos.items():
+                repo_basename = Path(gr).name.lower()
+                # Check if the project dir name ends with the repo name
+                if segments and segments[-1].lower() == repo_basename:
+                    git_root = gr
+                    git_url = gu
+                    fs_path = gr  # best guess: repo root
+                    break
+                # Also try matching with hyphenated repo names like flash-attention
+                for i in range(max(0, len(segments) - 3), len(segments)):
+                    candidate = "-".join(segments[i:]).lower()
+                    if candidate == repo_basename:
+                        git_root = gr
+                        git_url = gu
+                        fs_path = gr
+                        break
+                if git_url:
+                    break
 
         if git_url and git_root and fs_path:
             key = normalize_git_url(git_url)
