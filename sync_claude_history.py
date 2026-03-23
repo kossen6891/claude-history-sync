@@ -960,6 +960,104 @@ def sync_files(service, folder_id, local_dir: Path, args, indent="    ",
     return pushed, pulled, skipped
 
 
+def sync_memory(service, folder_id, local_dir: Path, args, indent="    "):
+    """Sync the memory/ subfolder between local_dir and a _memory Drive folder."""
+    memory_dir = local_dir / "memory"
+    has_local = memory_dir.is_dir() and any(memory_dir.glob("*.md"))
+
+    # Get or check for _memory folder on Drive
+    remote_folders = list_drive_folders(service, folder_id)
+    memory_folder_id = remote_folders.get("_memory", {}).get("id") if "_memory" in remote_folders else None
+
+    if not has_local and not memory_folder_id:
+        return 0, 0
+
+    # Create folders as needed
+    if has_local and not memory_folder_id and not args.pull_only and not args.dry_run:
+        memory_folder_id = get_or_create_folder(service, "_memory", folder_id)
+    if memory_folder_id is None and args.pull_only:
+        return 0, 0
+    if memory_folder_id is None and args.dry_run:
+        # Preview mode — count what would be pushed
+        local_files = list(memory_dir.glob("*.md"))
+        if local_files:
+            print(f"{indent}[WOULD PUSH] memory/ ({len(local_files)} files)")
+        return len(local_files), 0
+
+    # List remote memory files
+    remote_files = list_remote_files(service, memory_folder_id) if memory_folder_id else {}
+
+    # Ensure local memory dir exists for pull
+    if not memory_dir.exists() and not args.push_only:
+        if not args.dry_run:
+            memory_dir.mkdir(parents=True, exist_ok=True)
+
+    pushed = pulled = 0
+
+    # Sync local -> remote
+    if has_local and not args.pull_only:
+        for md_file in sorted(memory_dir.glob("*.md")):
+            fname = md_file.name
+            local_md5 = local_file_md5(md_file)
+            local_mtime = md_file.stat().st_mtime
+
+            if fname in remote_files:
+                remote = remote_files[fname]
+                if local_md5 == remote.get("md5Checksum", ""):
+                    continue
+                remote_mtime = datetime.fromisoformat(
+                    remote["modifiedTime"].replace("Z", "+00:00")
+                ).timestamp()
+                if local_mtime > remote_mtime:
+                    if not args.dry_run:
+                        media = MediaFileUpload(str(md_file))
+                        service.files().update(fileId=remote["id"], media_body=media).execute()
+                    pushed += 1
+            else:
+                if not args.dry_run:
+                    media = MediaFileUpload(str(md_file))
+                    service.files().create(
+                        body={"name": fname, "parents": [memory_folder_id]},
+                        media_body=media,
+                    ).execute()
+                pushed += 1
+
+    # Pull remote -> local
+    if not args.push_only:
+        local_names = {p.name for p in memory_dir.glob("*.md")} if memory_dir.is_dir() else set()
+        for fname, remote in remote_files.items():
+            if not fname.endswith(".md"):
+                continue
+            local_path = memory_dir / fname
+            if fname in local_names:
+                local_md5 = local_file_md5(local_path)
+                if local_md5 == remote.get("md5Checksum", ""):
+                    continue
+                remote_mtime = datetime.fromisoformat(
+                    remote["modifiedTime"].replace("Z", "+00:00")
+                ).timestamp()
+                if remote_mtime > local_path.stat().st_mtime:
+                    if not args.dry_run:
+                        download_file(service, remote["id"], local_path)
+                    pulled += 1
+            else:
+                if not args.dry_run:
+                    download_file(service, remote["id"], local_path)
+                pulled += 1
+
+    if pushed or pulled:
+        action_parts = []
+        if pushed:
+            verb = "would push" if args.dry_run else "pushed"
+            action_parts.append(f"{verb} {pushed}")
+        if pulled:
+            verb = "would pull" if args.dry_run else "pulled"
+            action_parts.append(f"{verb} {pulled}")
+        print(f"{indent}[memory] {', '.join(action_parts)}")
+
+    return pushed, pulled
+
+
 # ---------------------------------------------------------------------------
 # Main sync logic
 # ---------------------------------------------------------------------------
@@ -1167,6 +1265,10 @@ def run_sync(args, service, root_folder_id):
                     service, subfolder_id, project_dir, args, indent="  ║   ",
                     remote_files=remote_sub_files, local_jsons=local_jsons,
                 )
+                # Sync memory for this project subdir
+                mem_pushed, mem_pulled = sync_memory(
+                    service, subfolder_id, project_dir, args, indent="  ║   ",
+                )
                 if pushed or pulled:
                     if args.dry_run:
                         print(f"  ║   => would push {pushed}, would pull {pulled}, {skipped} unchanged")
@@ -1326,6 +1428,10 @@ def run_sync(args, service, root_folder_id):
                         service, subfolder_id, project_dir, args, indent="  ║   ",
                         remote_files=remote_sub_files, local_jsons=local_jsons,
                     )
+                    # Sync memory for this project subdir
+                    mem_pushed, mem_pulled = sync_memory(
+                        service, subfolder_id, project_dir, args, indent="  ║   ",
+                    )
                     if pushed or pulled:
                         if args.dry_run:
                             print(f"  ║   => would push {pushed}, would pull {pulled}, {skipped} unchanged")
@@ -1402,15 +1508,21 @@ def main():
             except (json.JSONDecodeError, OSError):
                 pass
 
-        # Update/add this job
-        old_interval = jobs.get(job_key, {}).get("interval")
-        jobs.setdefault("_daemon", {})
-        jobs[job_key] = {
-            "repo": args.repo,
-            "chat_id": args.chat_id,
-            "interval": interval,
-        }
-        jobs_file.write_text(json.dumps(jobs, indent=2))
+        # If --background with no repo/chat and jobs already exist, this is a restart
+        restart_only = (args.repo is None and args.chat_id is None
+                        and any(k for k in jobs if not k.startswith("_")))
+        if not restart_only:
+            # Update/add this job
+            old_interval = jobs.get(job_key, {}).get("interval")
+            jobs.setdefault("_daemon", {})
+            jobs[job_key] = {
+                "repo": args.repo,
+                "chat_id": args.chat_id,
+                "interval": interval,
+            }
+            jobs_file.write_text(json.dumps(jobs, indent=2))
+        else:
+            old_interval = None
 
         # Check if daemon is already running
         daemon_alive = False

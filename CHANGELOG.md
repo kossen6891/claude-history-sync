@@ -6,6 +6,7 @@
 - Speed up sync by batching Google Drive API calls (`batch_list_remote_files`, `batch_list_drive_folders`)
 - Store raw git URL in folder `description` to skip metadata file downloads on subsequent runs
 - Eliminate duplicate `list_remote_files` calls by passing pre-fetched data to `sync_files`
+- Sync `memory/` folder (MEMORY.md + memory files) alongside conversation history
 - Add `-d` short form for `--delete` and `--local` flag to delete local conversations
 - `--delete` now requires `--repo` and/or `--chat` (either or both)
 
