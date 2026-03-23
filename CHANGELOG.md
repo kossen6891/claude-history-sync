@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.1.7
+
+- Add DNS-over-HTTPS fallback when googleapis.com is unreachable via local DNS (patches socket + httplib2)
+- Speed up sync by batching Google Drive API calls (`batch_list_remote_files`, `batch_list_drive_folders`)
+- Store raw git URL in folder `description` to skip metadata file downloads on subsequent runs
+- Eliminate duplicate `list_remote_files` calls by passing pre-fetched data to `sync_files`
+- Add `-d` short form for `--delete` and `--local` flag to delete local conversations
+- `--delete` now requires `--repo` and/or `--chat` (either or both)
+
 ## v0.1.6
 
 - Add `--background` flag for auto-sync daemon (default: every 10 min), writes PID to `.sync.pid`

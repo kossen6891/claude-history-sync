@@ -33,10 +33,12 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.request
 from datetime import datetime
 from pathlib import Path
 
@@ -47,6 +49,92 @@ from googleapiclient.discovery import build
 from googleapiclient.http import MediaFileUpload, MediaIoBaseDownload
 
 SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+
+GOOGLE_API_HOSTS = ["oauth2.googleapis.com", "www.googleapis.com"]
+
+
+def _check_reachable(host, port=443, timeout=3):
+    """Check if a host:port is reachable via TCP."""
+    try:
+        sock = socket.create_connection((host, port), timeout=timeout)
+        sock.close()
+        return True
+    except (OSError, socket.timeout):
+        return False
+
+
+def _resolve_via_doh(hostname):
+    """Resolve a hostname using Google's DNS-over-HTTPS, bypassing local DNS."""
+    url = f"https://dns.google/resolve?name={hostname}&type=A"
+    try:
+        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+            for answer in data.get("Answer", []):
+                if answer.get("type") == 1:  # A record
+                    return answer["data"]
+    except Exception:
+        pass
+    return None
+
+
+def patch_dns_if_needed():
+    """If googleapis.com is unreachable via local DNS, resolve via DoH and
+    monkey-patch socket.getaddrinfo to use the public IPs as a fallback."""
+    if _check_reachable(GOOGLE_API_HOSTS[0]):
+        return
+
+    print("Google APIs unreachable via local DNS, resolving via DoH fallback...")
+    overrides = {}
+    for host in GOOGLE_API_HOSTS:
+        ip = _resolve_via_doh(host)
+        if ip:
+            overrides[host] = ip
+            print(f"  {host} -> {ip}")
+
+    if not overrides:
+        print("WARNING: DoH resolution failed, Google API calls may hang.")
+        return
+
+    _original_getaddrinfo = socket.getaddrinfo
+
+    def _patched_getaddrinfo(host, port, *args, **kwargs):
+        if host in overrides:
+            host = overrides[host]
+        return _original_getaddrinfo(host, port, *args, **kwargs)
+
+    socket.getaddrinfo = _patched_getaddrinfo
+
+    # httplib2 (used by google-api-python-client) does its own connection
+    # handling and may bypass getaddrinfo. Patch its HTTPSConnectionWithTimeout
+    # to connect to the resolved IP while preserving the original hostname for
+    # SNI and certificate verification.
+    try:
+        import httplib2
+        _original_connect = httplib2.HTTPSConnectionWithTimeout.connect
+
+        def _patched_connect(self):
+            if self.host in overrides:
+                real_host = self.host
+                self.host = overrides[real_host]
+                # Create TCP connection to the IP
+                sock = socket.create_connection(
+                    (self.host, self.port),
+                    timeout=self.timeout,
+                )
+                # Wrap with TLS using the original hostname for SNI
+                self.sock = self._context.wrap_socket(
+                    sock, server_hostname=real_host
+                )
+                # Restore the original hostname
+                self.host = real_host
+            else:
+                _original_connect(self)
+
+        httplib2.HTTPSConnectionWithTimeout.connect = _patched_connect
+    except (ImportError, AttributeError):
+        pass
+
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 DRIVE_FOLDER_NAME = "claude-code-history"
 SCRIPT_DIR = Path(__file__).parent
@@ -124,23 +212,29 @@ def get_or_create_folder(service, folder_name, parent_id=None):
     return folder["id"]
 
 
-def list_drive_folders(service, parent_id):
-    """List subfolders. Returns {name: id}."""
+def list_drive_folders(service, parent_id, include_description=False):
+    """List subfolders. Returns {name: id} or {name: {id, description}} if include_description."""
     folders = {}
+    fields = "nextPageToken, files(id, name)"
+    if include_description:
+        fields = "nextPageToken, files(id, name, description)"
     page_token = None
     while True:
         results = (
             service.files()
             .list(
                 q=f"'{parent_id}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
-                fields="nextPageToken, files(id, name)",
+                fields=fields,
                 pageSize=1000,
                 pageToken=page_token,
             )
             .execute()
         )
         for f in results.get("files", []):
-            folders[f["name"]] = f["id"]
+            if include_description:
+                folders[f["name"]] = {"id": f["id"], "description": f.get("description", "")}
+            else:
+                folders[f["name"]] = f["id"]
         page_token = results.get("nextPageToken")
         if not page_token:
             break
@@ -169,6 +263,74 @@ def list_remote_files(service, folder_id):
         if not page_token:
             break
     return remote
+
+
+def batch_list_drive_folders(service, folder_ids):
+    """List subfolders in multiple Drive folders using batch requests.
+
+    Args: folder_ids: dict of {key: folder_id}
+    Returns: {key: {subfolder_name: subfolder_id}}
+    """
+    results = {k: {} for k in folder_ids}
+    items = list(folder_ids.items())
+
+    for batch_start in range(0, len(items), 100):
+        batch_items = items[batch_start:batch_start + 100]
+        batch = service.new_batch_http_request()
+
+        def _make_callback(key):
+            def _cb(request_id, response, exception):
+                if exception is None and response:
+                    for f in response.get("files", []):
+                        results[key][f["name"]] = f["id"]
+            return _cb
+
+        for key, fid in batch_items:
+            req = service.files().list(
+                q=f"'{fid}' in parents and mimeType='application/vnd.google-apps.folder' and trashed=false",
+                fields="files(id, name)",
+                pageSize=1000,
+            )
+            batch.add(req, callback=_make_callback(key))
+
+        batch.execute()
+
+    return results
+
+
+def batch_list_remote_files(service, folder_ids):
+    """List files in multiple Drive folders using batch requests.
+
+    Args: folder_ids: dict of {key: folder_id}
+    Returns: {key: {name: {id, modifiedTime, md5, size}}}
+    """
+    results = {k: {} for k in folder_ids}
+    items = list(folder_ids.items())
+
+    # Google batch API supports up to 100 requests per batch
+    for batch_start in range(0, len(items), 100):
+        batch_items = items[batch_start:batch_start + 100]
+        batch = service.new_batch_http_request()
+
+        def _make_callback(key):
+            def _cb(request_id, response, exception):
+                if exception is None and response:
+                    for f in response.get("files", []):
+                        results[key][f["name"]] = f
+            return _cb
+
+        for key, fid in batch_items:
+            req = service.files().list(
+                q=f"'{fid}' in parents and trashed=false"
+                f" and mimeType!='application/vnd.google-apps.folder'",
+                fields="files(id, name, modifiedTime, md5Checksum, size)",
+                pageSize=1000,
+            )
+            batch.add(req, callback=_make_callback(key))
+
+        batch.execute()
+
+    return results
 
 
 def upload_string(service, content: str, name: str, folder_id: str, existing_id=None):
@@ -672,11 +834,14 @@ def repo_matches_filter(raw_url: str, repo_filter: str | None) -> bool:
     return any(f.strip().lower() in url_lower for f in repo_filter.split(","))
 
 
-def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
+def sync_files(service, folder_id, local_dir: Path, args, indent="    ",
+               remote_files=None, local_jsons=None):
     """Sync .jsonl files between local_dir and a Drive folder. Returns (pushed, pulled, skipped)."""
-    remote_files = list_remote_files(service, folder_id)
-    local_jsons = {p.name: p for p in sorted(local_dir.glob("*.jsonl"))
-                   if not is_empty_conversation(p)}
+    if remote_files is None:
+        remote_files = list_remote_files(service, folder_id)
+    if local_jsons is None:
+        local_jsons = {p.name: p for p in sorted(local_dir.glob("*.jsonl"))
+                       if not is_empty_conversation(p)}
 
     # Filter by --chat if specified (dest=chat_id)
     chat_ids = getattr(args, "chat_id", None)
@@ -816,11 +981,65 @@ def run_sync(args, service, root_folder_id):
     for d, _, _, _ in no_git:
         print(f"  [SKIP no git] {d.name}")
 
-    # --- DELETE: remove conversations from Drive ---
+    # --- DELETE LOCAL: remove local conversation files ---
+    if args.delete and args.local:
+        chat_filters = [c.strip() for c in args.chat_id.split(",")] if args.chat_id else None
+        to_delete = []
+        # Search git projects
+        for url_key, entries in git_projects.items():
+            raw_url = entries[0][1]
+            if not repo_matches_filter(raw_url, args.repo):
+                continue
+            for project_dir, _, git_root, rel_path in entries:
+                for jsonl_path in sorted(project_dir.glob("*.jsonl")):
+                    if chat_filters and not any(jsonl_path.name.startswith(c) for c in chat_filters):
+                        continue
+                    title = get_conversation_title(jsonl_path)
+                    title_str = f'"{title}"' if title else "(untitled)"
+                    size = format_size(jsonl_path.stat().st_size)
+                    to_delete.append((jsonl_path, title_str, size))
+        # Also search no-git projects (only when filtering by --chat)
+        if chat_filters and not args.repo:
+            for project_dir, _, _, _ in no_git:
+                for jsonl_path in sorted(project_dir.glob("*.jsonl")):
+                    if not any(jsonl_path.name.startswith(c) for c in chat_filters):
+                        continue
+                    title = get_conversation_title(jsonl_path)
+                    title_str = f'"{title}"' if title else "(untitled)"
+                    size = format_size(jsonl_path.stat().st_size)
+                    to_delete.append((jsonl_path, title_str, size))
+
+        if not to_delete:
+            print("No matching local conversations to delete.")
+            return True
+
+        # Require confirmation for repo-wide delete (no --chat)
+        if not chat_filters:
+            print(f"About to delete {len(to_delete)} local conversations:")
+            for jsonl_path, title_str, size in to_delete:
+                print(f"  {jsonl_path.stem[:8]}…  {title_str}  ({size})")
+            if not args.dry_run:
+                confirm = input("Type 'yes' to confirm: ").strip()
+                if confirm != "yes":
+                    print("Aborted.")
+                    return True
+
+        for jsonl_path, title_str, size in to_delete:
+            if args.dry_run:
+                print(f"  [WOULD DELETE] {jsonl_path.stem[:8]}…  {title_str}  ({size})")
+            else:
+                jsonl_path.unlink()
+                print(f"  [DELETED] {jsonl_path.stem[:8]}…  {title_str}  ({size})")
+
+        print("Done.")
+        return True
+
+    # --- DELETE REMOTE: remove conversations from Drive ---
     if args.delete:
         chat_filters = [c.strip() for c in args.chat_id.split(",")] if args.chat_id else None
         remote_repo_folders = list_drive_folders(service, root_folder_id)
-        for url_key, folder_id in remote_repo_folders.items():
+        for url_key, folder_id_val in remote_repo_folders.items():
+            folder_id = folder_id_val["id"] if isinstance(folder_id_val, dict) else folder_id_val
             repo_files = list_remote_files(service, folder_id)
             meta_file = repo_files.get("_metadata.json")
             raw_url = url_key
@@ -883,6 +1102,12 @@ def run_sync(args, service, root_folder_id):
                 continue
             repo_folder_id = get_or_create_folder(service, url_key, root_folder_id)
 
+            # Store raw URL in folder description for fast lookup during pull
+            service.files().update(
+                fileId=repo_folder_id,
+                body={"description": raw_url},
+            ).execute()
+
             # Update metadata
             meta = {
                 "remote_url": raw_url,
@@ -915,9 +1140,10 @@ def run_sync(args, service, root_folder_id):
                     service, subfolder_name, repo_folder_id
                 )
 
-                local_jsonls = [p for p in project_dir.glob("*.jsonl") if not is_empty_conversation(p)]
-                local_count = len(local_jsonls)
-                local_size = sum(p.stat().st_size for p in local_jsonls)
+                local_jsons = {p.name: p for p in sorted(project_dir.glob("*.jsonl"))
+                               if not is_empty_conversation(p)}
+                local_count = len(local_jsons)
+                local_size = sum(p.stat().st_size for p in local_jsons.values())
                 remote_sub_files = list_remote_files(service, subfolder_id)
                 remote_count = sum(1 for k in remote_sub_files if k.endswith(".jsonl"))
                 remote_size = sum(
@@ -929,7 +1155,7 @@ def run_sync(args, service, root_folder_id):
                 print(f"  ║ {subdir_label:<35s} {local_count:>2} local ({format_size(local_size):>8})  {remote_count:>2} remote ({format_size(remote_size):>8})")
 
                 if args.verbose:
-                    for jsonl_path in sorted(local_jsonls):
+                    for jsonl_path in sorted(local_jsons.values()):
                         sid = jsonl_path.stem
                         title = get_conversation_title(jsonl_path)
                         size = format_size(jsonl_path.stat().st_size)
@@ -938,7 +1164,8 @@ def run_sync(args, service, root_folder_id):
                         print(f"  ║   ╰─ {sid[:8]}…  {title_str:<30s} {size:>8}  {mtime}")
 
                 pushed, pulled, skipped = sync_files(
-                    service, subfolder_id, project_dir, args, indent="  ║   "
+                    service, subfolder_id, project_dir, args, indent="  ║   ",
+                    remote_files=remote_sub_files, local_jsons=local_jsons,
                 )
                 if pushed or pulled:
                     if args.dry_run:
@@ -949,7 +1176,7 @@ def run_sync(args, service, root_folder_id):
 
     # --- PULL: download from remote into matching local project dirs ---
     if not args.push_only:
-        remote_repo_folders = list_drive_folders(service, root_folder_id)
+        remote_repo_folders = list_drive_folders(service, root_folder_id, include_description=True)
 
         # Build reverse index: for each local git root, map rel_path -> project_dir
         # so we can match remote subfolders to local dirs
@@ -960,29 +1187,82 @@ def run_sync(args, service, root_folder_id):
                     project_dir, git_root
                 )
 
-        pull_printed_first = push_printed_any
-        for url_key, repo_folder_id in sorted(remote_repo_folders.items()):
-            # Already synced in push phase (bidirectional)?
+        # Filter to repos we need to process in the pull phase,
+        # resolving raw URLs from folder description (fast) or metadata file (fallback)
+        pull_repos = []
+        repo_meta = {}  # url_key -> raw_url
+        repos_needing_meta = []  # repos where we need to download _metadata.json
+        for url_key, folder_info in sorted(remote_repo_folders.items()):
             if url_key in git_projects and not args.pull_only:
                 continue
+            repo_fid = folder_info["id"]
+            desc = folder_info.get("description", "")
+            if desc:
+                repo_meta[url_key] = desc
+            else:
+                repos_needing_meta.append((url_key, repo_fid))
+            pull_repos.append((url_key, repo_fid))
 
-            # Read metadata to get the raw URL
-            repo_files = list_remote_files(service, repo_folder_id)
-            meta_file = repo_files.get("_metadata.json")
-            raw_url = url_key
-            if meta_file:
-                meta = json.loads(download_string(service, meta_file["id"]))
-                raw_url = meta.get("remote_url", url_key)
+        # Batch-fetch repo-level files only for repos without description (need _metadata.json)
+        if repos_needing_meta:
+            repo_level_files = batch_list_remote_files(
+                service, {uk: fid for uk, fid in repos_needing_meta}
+            )
+            # Batch to update folder descriptions after resolving metadata
+            desc_batch = service.new_batch_http_request() if not args.dry_run else None
+            desc_count = 0
+            for url_key, repo_fid in repos_needing_meta:
+                files = repo_level_files.get(url_key, {})
+                meta_file = files.get("_metadata.json")
+                raw_url = url_key
+                if meta_file:
+                    try:
+                        meta = json.loads(download_string(service, meta_file["id"]))
+                        raw_url = meta.get("remote_url", url_key)
+                    except Exception:
+                        pass
+                repo_meta[url_key] = raw_url
+                # Backfill folder description for future fast lookup
+                if raw_url != url_key and desc_batch is not None:
+                    desc_batch.add(service.files().update(
+                        fileId=repo_fid, body={"description": raw_url}
+                    ))
+                    desc_count += 1
+            if desc_count > 0:
+                desc_batch.execute()
+
+        repos_to_list = {}
+        for url_key, repo_fid in pull_repos:
+            raw_url = repo_meta.get(url_key, url_key)
+            if repo_matches_filter(raw_url, args.repo):
+                repos_to_list[url_key] = repo_fid
+
+        # Batch-fetch subfolders for all filtered repos
+        all_subfolders = batch_list_drive_folders(service, repos_to_list)
+
+        # Batch-fetch all subfolder file lists in one batch call
+        sf_lookup = {}  # (url_key, sf_name) -> sf_id
+        for url_key, sfs in all_subfolders.items():
+            for sf_name, sf_id in sfs.items():
+                sf_lookup[(url_key, sf_name)] = sf_id
+        sf_files_all = batch_list_remote_files(service, sf_lookup) if sf_lookup else {}
+
+        pull_printed_first = push_printed_any
+        for url_key, repo_fid in pull_repos:
+            raw_url = repo_meta.get(url_key, url_key)
+            remote_subfolders = all_subfolders.get(url_key)
 
             if not repo_matches_filter(raw_url, args.repo):
                 continue
 
+            if remote_subfolders is None:
+                continue
+
             if url_key not in local_by_url:
-                remote_subfolders = list_drive_folders(service, repo_folder_id)
                 total_convos = 0
                 total_size = 0
-                for sf_name, sf_id in remote_subfolders.items():
-                    sf_files = list_remote_files(service, sf_id)
+                for sf_name in remote_subfolders:
+                    sf_files = sf_files_all.get((url_key, sf_name), {})
                     total_convos += sum(1 for k in sf_files if k.endswith(".jsonl"))
                     total_size += sum(
                         int(f.get("size", 0)) for k, f in sf_files.items()
@@ -999,7 +1279,6 @@ def run_sync(args, service, root_folder_id):
                 continue
 
             local_map = local_by_url[url_key]
-            remote_subfolders = list_drive_folders(service, repo_folder_id)
 
             B = "  ╠═══════════════════════════════════════════════════════════════════════════"
             pull_git_root = None
@@ -1016,7 +1295,7 @@ def run_sync(args, service, root_folder_id):
             for subfolder_name, subfolder_id in remote_subfolders.items():
                 rel_path = drive_subfolder_to_rel_path(subfolder_name)
 
-                remote_sub_files = list_remote_files(service, subfolder_id)
+                remote_sub_files = sf_files_all.get((url_key, subfolder_name), {})
                 remote_count = sum(1 for k in remote_sub_files if k.endswith(".jsonl"))
                 remote_size = sum(
                     int(f.get("size", 0)) for k, f in remote_sub_files.items()
@@ -1027,13 +1306,15 @@ def run_sync(args, service, root_folder_id):
 
                 if rel_path in local_map:
                     project_dir, _ = local_map[rel_path]
-                    local_count = len(list(project_dir.glob("*.jsonl")))
-                    local_size = sum(p.stat().st_size for p in project_dir.glob("*.jsonl"))
+                    local_jsons = {p.name: p for p in sorted(project_dir.glob("*.jsonl"))
+                                   if not is_empty_conversation(p)}
+                    local_count = len(local_jsons)
+                    local_size = sum(p.stat().st_size for p in local_jsons.values())
 
                     print(f"  ║ {subdir_label:<35s} {local_count:>2} local ({format_size(local_size):>8})  {remote_count:>2} remote ({format_size(remote_size):>8})")
 
                     if args.verbose:
-                        for jsonl_path in sorted(project_dir.glob("*.jsonl")):
+                        for jsonl_path in sorted(local_jsons.values()):
                             sid = jsonl_path.stem
                             title = get_conversation_title(jsonl_path)
                             size = format_size(jsonl_path.stat().st_size)
@@ -1042,7 +1323,8 @@ def run_sync(args, service, root_folder_id):
                             print(f"  ║   ╰─ {sid[:8]}…  {title_str:<30s} {size:>8}  {mtime}")
 
                     pushed, pulled, skipped = sync_files(
-                        service, subfolder_id, project_dir, args, indent="  ║   "
+                        service, subfolder_id, project_dir, args, indent="  ║   ",
+                        remote_files=remote_sub_files, local_jsons=local_jsons,
                     )
                     if pushed or pulled:
                         if args.dry_run:
@@ -1061,8 +1343,10 @@ def main():
     parser = argparse.ArgumentParser(description="Sync Claude Code history via Google Drive")
     parser.add_argument("--pull", dest="pull_only", action="store_true", help="Only download")
     parser.add_argument("--push", dest="push_only", action="store_true", help="Only upload")
-    parser.add_argument("--delete", action="store_true",
+    parser.add_argument("-d", "--delete", action="store_true",
                         help="Delete conversations from Drive (use with --repo and/or --chat)")
+    parser.add_argument("--local", action="store_true",
+                        help="Delete local conversations instead of remote (use with --delete)")
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen")
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("--repo", type=str, default=None,
@@ -1080,14 +1364,24 @@ def main():
         print("ERROR: --background interval must be positive")
         sys.exit(1)
 
-    if args.delete and not args.repo:
-        print("ERROR: --delete requires --repo")
+    if args.local and not args.delete:
+        print("ERROR: --local requires --delete")
+        sys.exit(1)
+
+    if args.delete and not args.repo and not args.chat_id:
+        print("ERROR: --delete requires --repo and/or --chat")
         sys.exit(1)
 
     if not CLAUDE_PROJECTS_DIR.exists():
         print(f"No Claude projects dir at {CLAUDE_PROJECTS_DIR}")
         sys.exit(1)
 
+    # Local delete doesn't need Drive access
+    if args.delete and args.local:
+        run_sync(args, service=None, root_folder_id=None)
+        sys.exit(0)
+
+    patch_dns_if_needed()
     service = get_drive_service()
     root_folder_id = get_or_create_folder(service, DRIVE_FOLDER_NAME)
 
@@ -1167,8 +1461,9 @@ def main():
         except (json.JSONDecodeError, OSError):
             pass
 
-        # Track last-run time per job
+        # Track last-run time and consecutive failures per job
         last_run = {}
+        fail_count = {}
 
         try:
             while True:
@@ -1183,11 +1478,14 @@ def main():
                     continue
 
                 now = time.time()
-                for job_key, job in jobs.items():
+                for job_key, job in list(jobs.items()):
                     if job_key.startswith("_"):
                         continue
                     job_interval = job.get("interval", 600)
-                    if now - last_run.get(job_key, 0) < job_interval:
+                    # Exponential backoff on repeated failures (max 4x interval)
+                    failures = fail_count.get(job_key, 0)
+                    effective_interval = min(job_interval * (2 ** failures), job_interval * 4)
+                    if now - last_run.get(job_key, 0) < effective_interval:
                         continue
 
                     # Build args for this job
@@ -1195,14 +1493,19 @@ def main():
                         pull_only=False, push_only=False, delete=False,
                         dry_run=False, verbose=False,
                         repo=job.get("repo"), chat_id=job.get("chat_id"),
-                        background=None,
+                        background=None, local=False,
                     )
                     try:
                         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         print(f"\n[{timestamp}] Syncing [{job_key}]...", flush=True)
                         run_sync(job_args, service, root_folder_id)
-                    except Exception as e:
-                        print(f"[ERROR] [{job_key}] {e}", flush=True)
+                        fail_count[job_key] = 0  # reset on success
+                    except BaseException as e:
+                        fail_count[job_key] = failures + 1
+                        backoff = min(job_interval * (2 ** (failures + 1)), job_interval * 4)
+                        print(f"[ERROR] [{job_key}] {type(e).__name__}: {e} "
+                              f"(failure {failures + 1}, next retry in {backoff}s)",
+                              flush=True)
                     last_run[job_key] = time.time()
 
                 # Sleep in small increments to stay responsive to new jobs
@@ -1213,6 +1516,20 @@ def main():
             pid_file.unlink(missing_ok=True)
             log_fd.close()
     else:
+        # Warn if background daemon died
+        jobs_file = SCRIPT_DIR / ".sync_jobs.json"
+        pid_file = SCRIPT_DIR / ".sync.pid"
+        if jobs_file.exists() and pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)
+            except (ProcessLookupError, ValueError, OSError):
+                jobs = json.loads(jobs_file.read_text())
+                job_count = sum(1 for k in jobs if not k.startswith("_"))
+                if job_count:
+                    print(f"⚠ Background daemon (PID {pid_file.read_text().strip()}) is dead "
+                          f"with {job_count} job(s) pending. Run --background to restart.")
+                pid_file.unlink(missing_ok=True)
         run_sync(args, service, root_folder_id)
 
 

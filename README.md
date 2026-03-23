@@ -38,7 +38,7 @@ Conversations are organized by **git remote URL**, so they follow the repo — n
 | ⬇️ **Pull** | Finds the local repo with the same git remote, downloads into the correct `~/.claude/projects/` dir |
 | 🔄 **Sync** | MD5 checksums skip identical files; when files differ, newer modification time wins |
 | 🏷️ **Names** | Conversation titles (from `/rename`) are synced via `_titles.json` and injected on pull |
-| 🗑️ **Delete** | Remove conversations from Drive with `--delete --repo <name>`, optionally filtered by `--chat` |
+| 🗑️ **Delete** | Remove conversations from Drive (`-d --repo <name>`) or locally (`-d --local --repo <name>`), optionally filtered by `--chat` |
 | 🔁 **Background** | Auto-sync with `--background`, writes PID to `.sync.pid` |
 
  🙈 Projects without a git remote are skipped (no way to match across machines).
@@ -89,9 +89,11 @@ python sync_claude_history.py --repo flashinfer         # 🎯 filter to specifi
 python sync_claude_history.py --repo flash,sglang       # 🎯 comma-separated repo filters
 python sync_claude_history.py --chat df9a6a22        # 💬 filter to specific conversation(s)
 python sync_claude_history.py --chat df9a,e520       # 💬 comma-separated chat ID prefixes
-python sync_claude_history.py --delete --repo sglang    # 🗑️  delete all conversations for a repo
-python sync_claude_history.py --delete --repo sglang --dry-run # 🗑️  preview delete
-python sync_claude_history.py --delete --repo sgl --chat df9a  # 🗑️  delete specific chat
+python sync_claude_history.py -d --repo sglang           # 🗑️  delete from Drive for a repo
+python sync_claude_history.py -d --repo sglang --dry-run # 🗑️  preview delete
+python sync_claude_history.py -d --repo sgl --chat df9a  # 🗑️  delete specific chat from Drive
+python sync_claude_history.py -d --local --repo sglang   # 🗑️  delete local conversations
+python sync_claude_history.py -d --local --chat df9a     # 🗑️  delete local chat by ID
 python sync_claude_history.py --background                     # 🔁 auto-sync in background
 python sync_claude_history.py --background --repo flash        # 🔁 auto-sync one repo
 python sync_claude_history.py --background 60 --repo flash     # 🔁 custom interval (60s)
