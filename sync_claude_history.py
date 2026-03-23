@@ -993,7 +993,7 @@ def sync_memory(service, folder_id, local_dir: Path, args, indent="    "):
 
     # Get or check for _memory folder on Drive
     remote_folders = list_drive_folders(service, folder_id)
-    memory_folder_id = remote_folders.get("_memory", {}).get("id") if "_memory" in remote_folders else None
+    memory_folder_id = remote_folders.get("_memory") if "_memory" in remote_folders else None
 
     if not has_local and not memory_folder_id:
         return 0, 0
@@ -1096,6 +1096,22 @@ def run_sync(args, service, root_folder_id):
     # Resolve unmatched projects (from other machines) by scanning sibling repos
     if None in local_index:
         resolve_unmatched_projects(local_index)
+
+    # Clean up empty local conversations (no assistant reply)
+    cleaned = 0
+    for entries in local_index.values():
+        for project_dir, _, _, _ in entries:
+            for jsonl in project_dir.glob("*.jsonl"):
+                if is_empty_conversation(jsonl):
+                    jsonl.unlink()
+                    # Also remove companion dir if it exists
+                    companion = jsonl.with_suffix("")
+                    if companion.is_dir():
+                        import shutil
+                        shutil.rmtree(companion)
+                    cleaned += 1
+    if cleaned:
+        print(f"Cleaned {cleaned} empty conversation(s)")
 
     git_projects = {k: v for k, v in local_index.items() if k is not None}
     no_git = local_index.get(None, [])

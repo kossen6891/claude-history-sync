@@ -8,22 +8,20 @@ CLI tool to sync Claude Code conversation history across machines via Google Dri
 
 ### Testing
 
-Every change must be tested with all flag combinations before committing:
+All tests live in `tests/` and use pytest. **Run `pytest tests/ -v` and ensure all tests pass before every push.**
+
+When adding a new flag or functionality, add corresponding test(s) in `tests/test_smoke.py`. Tests check both exit codes and output formatting (no tracebacks, no doubled borders).
 
 ```bash
-python sync_claude_history.py --dry-run       # verify no actual uploads/downloads
-python sync_claude_history.py --dry-run -v    # verify verbose conversation listing
-python sync_claude_history.py --push          # verify upload only
-python sync_claude_history.py --pull          # verify download only
-python sync_claude_history.py                 # verify bidirectional sync
+pytest tests/ -v           # run all tests
+pytest tests/ -v -k "dry"  # run subset
 ```
 
-Check that:
-- Output formatting (borders, alignment, tree characters) renders correctly and is not corrupted
-- Conversation titles are extracted and injected correctly
-- No doubled `╠═══` borders between repos
+Tests cover:
+- All flag combinations (dry-run, verbose, push, pull, repo/chat filters, delete, background)
+- Output formatting (borders, alignment, tree characters)
+- Error handling (clean exit, no tracebacks)
 - Conversation counts and sizes are accurate
-- Subdir paths resolve correctly for repos with hyphens/underscores in directory names
 
 ### Security (CRITICAL)
 

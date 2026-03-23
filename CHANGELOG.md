@@ -10,6 +10,9 @@
 - Add `-d` short form for `--delete` and `--local` flag to delete local conversations
 - `--delete` now requires `--repo` and/or `--chat` (either or both)
 - Add `--merge SOURCE TARGET` to merge conversations (fixes uuid chain and sessionId)
+- Auto-clean empty local conversations (no assistant reply) on every sync run
+- Fix `sync_memory` crash when `list_drive_folders` returns string IDs
+- Add pytest smoke tests for all flag combinations (`tests/test_smoke.py`)
 
 ## v0.1.6
 
