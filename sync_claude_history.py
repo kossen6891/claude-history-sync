@@ -826,6 +826,32 @@ def inject_custom_title(jsonl_path: Path, session_id: str, title: str):
         f.writelines(lines)
 
 
+def resolve_chat_id(prefix: str) -> str:
+    """Resolve a chat ID prefix to the full session ID. Returns prefix if no unique match."""
+    matches = set()
+    for project_dir in CLAUDE_PROJECTS_DIR.iterdir():
+        if not project_dir.is_dir():
+            continue
+        for f in project_dir.glob(f"{prefix}*.jsonl"):
+            matches.add(f.stem)
+    if len(matches) == 1:
+        return matches.pop()
+    return prefix
+
+
+def resolve_repo_filter(repo_filter: str) -> str:
+    """Resolve a repo substring filter to the full git remote URL. Returns filter if no unique match."""
+    index = build_local_index()
+    matches = set()
+    for url_key, entries in index.items():
+        for _, raw_url, _, _ in entries:
+            if repo_filter.lower() in raw_url.lower():
+                matches.add(raw_url)
+    if len(matches) == 1:
+        return matches.pop()
+    return repo_filter
+
+
 def repo_matches_filter(raw_url: str, repo_filter: str | None) -> bool:
     """Check if a git remote URL matches the --repo filter (comma-separated substring match)."""
     if repo_filter is None:
@@ -1616,8 +1642,12 @@ def main():
         pid_file = SCRIPT_DIR / ".sync.pid"
         jobs_file = SCRIPT_DIR / ".sync_jobs.json"
 
-        # Job key: unique per repo+chat combo
-        job_key = f"{args.repo or 'all'}:{args.chat_id or 'all'}"
+        # Resolve prefixes to full IDs for deduplication
+        full_repo = resolve_repo_filter(args.repo) if args.repo else None
+        full_chat = resolve_chat_id(args.chat_id) if args.chat_id else None
+
+        # Job key: unique per resolved repo+chat combo
+        job_key = f"{full_repo or 'all'}:{full_chat or 'all'}"
 
         # Load existing jobs
         jobs = {}
@@ -1631,12 +1661,13 @@ def main():
         restart_only = (args.repo is None and args.chat_id is None
                         and any(k for k in jobs if not k.startswith("_")))
         if not restart_only:
-            # Update/add this job
+            # Check for existing jobs that match the same resolved key
+            # (e.g. "de1128" and "de11280" both resolve to same full ID)
             old_interval = jobs.get(job_key, {}).get("interval")
             jobs.setdefault("_daemon", {})
             jobs[job_key] = {
-                "repo": args.repo,
-                "chat_id": args.chat_id,
+                "repo": full_repo,
+                "chat_id": full_chat,
                 "interval": interval,
             }
             jobs_file.write_text(json.dumps(jobs, indent=2))
