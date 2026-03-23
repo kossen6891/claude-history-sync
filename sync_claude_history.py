@@ -138,6 +138,7 @@ def patch_dns_if_needed():
 CLAUDE_PROJECTS_DIR = Path.home() / ".claude" / "projects"
 DRIVE_FOLDER_NAME = "claude-code-history"
 SCRIPT_DIR = Path(__file__).parent
+STATE_DIR = Path(os.environ.get("SYNC_STATE_DIR", str(SCRIPT_DIR)))
 TOKEN_PATH = SCRIPT_DIR / "token.json"
 CREDENTIALS_PATH = SCRIPT_DIR / "credentials.json"
 SERVICE_ACCOUNT_PATH = SCRIPT_DIR / "service-account.json"
@@ -411,30 +412,37 @@ def resolve_claude_project_path(project_dir_name: str) -> str | None:
     encoded = project_dir_name.lstrip("-")
     segments = encoded.split("-")
 
-    def _resolve(pos: int, current_path: str) -> str | None:
-        """Recursively try combining segments with / or - or _ at each split point."""
+    dir_cache = {}
+
+    def _is_dir(p):
+        if p not in dir_cache:
+            dir_cache[p] = Path(p).is_dir()
+        return dir_cache[p]
+
+    def _resolve(pos: int, current_path: str, component_start: int) -> str | None:
+        """Recursively try combining segments with /, -, _, or . at each split point.
+        component_start tracks which segment the current component began at,
+        to limit component length and prune dead branches."""
         if pos == len(segments):
             if Path(current_path).exists():
                 return current_path
             return None
 
-        # Option 1: next segment is a new directory component (use /)
-        candidate = current_path + "/" + segments[pos]
-        result = _resolve(pos + 1, candidate)
-        if result:
-            return result
+        # Option 1: treat current_path as a complete dir, start new component
+        if _is_dir(current_path):
+            candidate = current_path + "/" + segments[pos]
+            result = _resolve(pos + 1, candidate, pos)
+            if result:
+                return result
 
-        # Option 2: next segment continues current component with hyphen (use -)
-        candidate = current_path + "-" + segments[pos]
-        result = _resolve(pos + 1, candidate)
-        if result:
-            return result
-
-        # Option 3: next segment continues current component with underscore (use _)
-        candidate = current_path + "_" + segments[pos]
-        result = _resolve(pos + 1, candidate)
-        if result:
-            return result
+        # Options 2-4: continue building current component name
+        # Limit: a single component can span at most 4 segments to avoid combinatorial explosion
+        if pos - component_start < 4:
+            for sep in ("-", "_", "."):
+                candidate = current_path + sep + segments[pos]
+                result = _resolve(pos + 1, candidate, component_start)
+                if result:
+                    return result
 
         return None
 
@@ -442,7 +450,7 @@ def resolve_claude_project_path(project_dir_name: str) -> str | None:
         return None
 
     # Start with /first-segment as the root
-    return _resolve(1, "/" + segments[0])
+    return _resolve(1, "/" + segments[0], 0)
 
 
 def find_git_root(path: str) -> str | None:
@@ -826,17 +834,28 @@ def inject_custom_title(jsonl_path: Path, session_id: str, title: str):
         f.writelines(lines)
 
 
-def resolve_chat_id(prefix: str) -> str:
-    """Resolve a chat ID prefix to the full session ID. Returns prefix if no unique match."""
-    matches = set()
+def resolve_chat_id(prefix: str) -> tuple[str, str | None]:
+    """Resolve a chat ID prefix to (full_session_id, repo_url).
+
+    Returns (prefix, None) if no unique match."""
+    matches = []  # (session_id, project_dir)
     for project_dir in CLAUDE_PROJECTS_DIR.iterdir():
         if not project_dir.is_dir():
             continue
         for f in project_dir.glob(f"{prefix}*.jsonl"):
-            matches.add(f.stem)
-    if len(matches) == 1:
-        return matches.pop()
-    return prefix
+            matches.append((f.stem, project_dir))
+    if len(matches) != 1:
+        return prefix, None
+    session_id, project_dir = matches[0]
+    # Resolve project dir to git remote URL
+    local_path = resolve_claude_project_path(project_dir.name)
+    if local_path:
+        git_root = find_git_root(local_path)
+        if git_root:
+            raw_url = get_git_remote(git_root)
+            if raw_url:
+                return session_id, raw_url
+    return session_id, None
 
 
 def resolve_repo_filter(repo_filter: str) -> str:
@@ -1654,13 +1673,16 @@ def main():
 
     if args.background is not None:
         interval = args.background
-        log_file = SCRIPT_DIR / "sync.log"
-        pid_file = SCRIPT_DIR / ".sync.pid"
-        jobs_file = SCRIPT_DIR / ".sync_jobs.json"
+        log_file = STATE_DIR / "sync.log"
+        pid_file = STATE_DIR / ".sync.pid"
+        jobs_file = STATE_DIR / ".sync_jobs.json"
 
         # Resolve prefixes to full IDs for deduplication
         full_repo = resolve_repo_filter(args.repo) if args.repo else None
-        full_chat = resolve_chat_id(args.chat_id) if args.chat_id else None
+        full_chat, chat_repo = resolve_chat_id(args.chat_id) if args.chat_id else (None, None)
+        # If repo not specified but chat resolved to a repo, use it
+        if full_repo is None and chat_repo is not None:
+            full_repo = chat_repo
 
         # Job key: unique per resolved repo+chat combo
         job_key = f"{full_repo or 'all'}:{full_chat or 'all'}"
@@ -1795,8 +1817,8 @@ def main():
             log_fd.close()
     else:
         # Warn if background daemon died
-        jobs_file = SCRIPT_DIR / ".sync_jobs.json"
-        pid_file = SCRIPT_DIR / ".sync.pid"
+        jobs_file = STATE_DIR / ".sync_jobs.json"
+        pid_file = STATE_DIR / ".sync.pid"
         if jobs_file.exists() and pid_file.exists():
             try:
                 old_pid = int(pid_file.read_text().strip())

@@ -36,6 +36,7 @@ Tests cover:
 - Update `CHANGELOG.md` with every commit under the current version section
 - Keep changelog entries as single-line bullet points
 - Update `README.md` when adding, renaming, or removing flags, features, or changing output format
+- When rewriting commits (rebase, amend), preserve original timestamps — do not use `--reset-author` or any flag that modifies the commit date
 
 ### Code Style
 

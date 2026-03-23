@@ -1,151 +1,177 @@
-"""Smoke tests: run every flag combination, check for errors and output formatting."""
+"""Smoke tests: run every flag combination, check for errors and output formatting.
 
+Uses a shared Drive service (session-scoped fixture) to avoid re-authing per test.
+Tests that don't need Drive (errors, local delete, background) skip the fixture.
+"""
+
+import io
+import os
 import re
+import signal
 import subprocess
+import sys
+import time
+
 import pytest
 
-SCRIPT = ["python", "sync_claude_history.py"]
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
 BORDER = "╠═══"
-EDGE = "║"
 
 
-def run(args, should_fail=False):
-    """Run the script with args, return (stdout, stderr, returncode)."""
-    result = subprocess.run(
-        SCRIPT + args,
-        capture_output=True, text=True, timeout=120,
-    )
-    if not should_fail:
-        assert result.returncode == 0, (
-            f"Exit code {result.returncode}\nstderr: {result.stderr}\nstdout: {result.stdout}"
-        )
-    return result
+@pytest.fixture(scope="session")
+def drive():
+    """Shared Drive service + root folder ID, authed once for all tests."""
+    from sync_claude_history import patch_dns_if_needed, get_drive_service, get_or_create_folder, DRIVE_FOLDER_NAME
+    patch_dns_if_needed()
+    service = get_drive_service()
+    root_id = get_or_create_folder(service, DRIVE_FOLDER_NAME)
+    return service, root_id
+
+
+def _parse_args(args_list):
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--pull", dest="pull_only", action="store_true")
+    parser.add_argument("--push", dest="push_only", action="store_true")
+    parser.add_argument("-d", "--delete", action="store_true")
+    parser.add_argument("--local", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--repo", type=str, default=None)
+    parser.add_argument("--chat", type=str, default=None, dest="chat_id")
+    parser.add_argument("--background", type=int, nargs="?", const=600, default=None)
+    parser.add_argument("--merge", nargs=2, default=None)
+    return parser.parse_args(args_list)
+
+
+def run_sync(args_list, service, root_folder_id):
+    """Run sync in-process with shared Drive service. Returns captured stdout."""
+    from sync_claude_history import run_sync as _run_sync
+    args = _parse_args(args_list)
+    old_stdout = sys.stdout
+    sys.stdout = buf = io.StringIO()
+    try:
+        _run_sync(args, service, root_folder_id)
+    finally:
+        sys.stdout = old_stdout
+    return buf.getvalue()
 
 
 def check_format(output):
     """Verify output formatting is not corrupted."""
-    lines = output.strip().splitlines()
     assert "Traceback" not in output, f"Traceback in output:\n{output[-500:]}"
-
-    # No doubled borders on same line
-    for line in lines:
+    for line in output.strip().splitlines():
         assert line.count(BORDER) <= 1, f"Doubled border: {line}"
-
-    # Every border/edge line should start with whitespace + ║ or ╠
-    for line in lines:
-        stripped = line.lstrip()
-        if stripped.startswith(EDGE) or stripped.startswith(BORDER):
-            # Good — properly formatted
-            pass
 
 
 # ---------------------------------------------------------------------------
-# Sync flags
+# Sync flags (share Drive service)
 # ---------------------------------------------------------------------------
 
 class TestDryRun:
-    def test_basic(self):
-        r = run(["--dry-run"])
-        check_format(r.stdout)
-        assert "Found" in r.stdout
-        assert "Done." in r.stdout
+    def test_basic(self, drive):
+        out = run_sync(["--dry-run"], *drive)
+        check_format(out)
+        assert "Found" in out
+        assert "Done." in out
 
-    def test_verbose(self):
-        r = run(["--dry-run", "-v"])
-        check_format(r.stdout)
-        assert "Found" in r.stdout
+    def test_verbose(self, drive):
+        out = run_sync(["--dry-run", "-v"], *drive)
+        check_format(out)
+        assert "Found" in out
 
-    def test_push(self):
-        r = run(["--push", "--dry-run"])
-        check_format(r.stdout)
+    def test_push(self, drive):
+        out = run_sync(["--push", "--dry-run"], *drive)
+        check_format(out)
 
-    def test_pull(self):
-        r = run(["--pull", "--dry-run"])
-        check_format(r.stdout)
+    def test_pull(self, drive):
+        out = run_sync(["--pull", "--dry-run"], *drive)
+        check_format(out)
 
 
 class TestFilters:
-    def test_repo_filter(self):
-        r = run(["--dry-run", "--repo", "sglang"])
-        check_format(r.stdout)
+    def test_repo_filter(self, drive):
+        out = run_sync(["--dry-run", "--repo", "sglang"], *drive)
+        check_format(out)
 
-    def test_chat_filter(self):
-        r = run(["--dry-run", "--chat", "df9a6a22"])
-        check_format(r.stdout)
+    def test_chat_filter(self, drive):
+        out = run_sync(["--dry-run", "--chat", "df9a6a22"], *drive)
+        check_format(out)
 
-    def test_repo_and_chat(self):
-        r = run(["--dry-run", "--repo", "sglang", "--chat", "de1128"])
-        check_format(r.stdout)
+    def test_repo_and_chat(self, drive):
+        out = run_sync(["--dry-run", "--repo", "sglang", "--chat", "de1128"], *drive)
+        check_format(out)
 
 
 class TestDelete:
-    def test_delete_dry(self):
-        r = run(["-d", "--repo", "sglang", "--dry-run"])
-        check_format(r.stdout)
+    def test_delete_dry(self, drive):
+        out = run_sync(["-d", "--repo", "sglang", "--dry-run"], *drive)
+        check_format(out)
 
-    def test_delete_chat_dry(self):
-        r = run(["-d", "--repo", "sglang", "--chat", "de1128", "--dry-run"])
-        check_format(r.stdout)
+    def test_delete_chat_dry(self, drive):
+        out = run_sync(["-d", "--repo", "sglang", "--chat", "de1128", "--dry-run"], *drive)
+        check_format(out)
 
     def test_delete_local_dry(self):
-        r = run(["-d", "--local", "--repo", "sglang", "--dry-run"])
-        check_format(r.stdout)
+        from sync_claude_history import run_sync as _run_sync
+        args = _parse_args(["-d", "--local", "--repo", "sglang", "--dry-run"])
+        old_stdout = sys.stdout
+        sys.stdout = buf = io.StringIO()
+        try:
+            _run_sync(args, service=None, root_folder_id=None)
+        finally:
+            sys.stdout = old_stdout
+        check_format(buf.getvalue())
 
+
+# ---------------------------------------------------------------------------
+# Background (subprocess — needs to fork)
+# ---------------------------------------------------------------------------
 
 class TestBackground:
-    def _cleanup(self):
-        import signal, os, time
-        # Kill any existing daemon
-        try:
-            pid = int(open(".sync.pid").read().strip())
-            os.kill(pid, signal.SIGTERM)
-            time.sleep(0.5)
-        except (FileNotFoundError, ProcessLookupError, ValueError):
-            pass
-        for f in [".sync.pid", ".sync_jobs.json", "sync.log"]:
-            try:
-                os.remove(f)
-            except FileNotFoundError:
-                pass
-
-    def test_start_and_stop(self):
-        import signal, os, time
-        self._cleanup()
-
-        r = run(["--background", "600", "--chat", "df9a6a22"])
+    def test_start_and_stop(self, tmp_path):
+        env = os.environ.copy()
+        env["SYNC_STATE_DIR"] = str(tmp_path)
+        r = subprocess.run(
+            ["python", "sync_claude_history.py", "--background", "600", "--chat", "df9a6a22"],
+            capture_output=True, text=True, timeout=120, env=env,
+        )
+        assert r.returncode == 0, f"stderr: {r.stderr}\nstdout: {r.stdout}"
         check_format(r.stdout)
         assert "PID:" in r.stdout
 
-        # Extract PID and clean up
         pid_match = re.search(r"PID:\s*(\d+)", r.stdout)
-        assert pid_match, "No PID in output"
+        assert pid_match
         pid = int(pid_match.group(1))
         try:
             os.kill(pid, signal.SIGTERM)
             time.sleep(0.5)
         except ProcessLookupError:
             pass
-        self._cleanup()
 
 
 # ---------------------------------------------------------------------------
-# Error handling — should exit cleanly, not traceback
+# Error handling — should exit cleanly, no tracebacks
 # ---------------------------------------------------------------------------
+
+def _run_expect_fail(args):
+    r = subprocess.run(
+        ["python", "sync_claude_history.py"] + args,
+        capture_output=True, text=True, timeout=10,
+    )
+    assert r.returncode != 0
+    assert "Traceback" not in r.stderr
+    assert "Traceback" not in r.stdout
+    return r
+
 
 class TestErrors:
     def test_delete_requires_filter(self):
-        r = run(["-d"], should_fail=True)
-        assert r.returncode != 0
-        assert "Traceback" not in r.stderr
-        assert "Traceback" not in r.stdout
+        _run_expect_fail(["-d"])
 
     def test_local_requires_delete(self):
-        r = run(["--local"], should_fail=True)
-        assert r.returncode != 0
-        assert "Traceback" not in r.stderr
-        assert "Traceback" not in r.stdout
+        _run_expect_fail(["--local"])
 
     def test_bad_background_interval(self):
-        r = run(["--background", "0"], should_fail=True)
-        assert r.returncode != 0
-        assert "Traceback" not in r.stderr
+        _run_expect_fail(["--background", "0"])
