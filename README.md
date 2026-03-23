@@ -97,6 +97,7 @@ python sync_claude_history.py -d --local --chat df9a     # 🗑️  delete local
 python sync_claude_history.py --background                     # 🔁 auto-sync in background
 python sync_claude_history.py --background --repo flash        # 🔁 auto-sync one repo
 python sync_claude_history.py --background 60 --repo flash     # 🔁 custom interval (60s)
+python sync_claude_history.py --merge fdd460 de1128            # 🔗 merge conversations
 ```
 
 ### Background sync

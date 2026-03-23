@@ -9,6 +9,7 @@
 - Sync `memory/` folder (MEMORY.md + memory files) alongside conversation history
 - Add `-d` short form for `--delete` and `--local` flag to delete local conversations
 - `--delete` now requires `--repo` and/or `--chat` (either or both)
+- Add `--merge SOURCE TARGET` to merge conversations (fixes uuid chain and sessionId)
 
 ## v0.1.6
 

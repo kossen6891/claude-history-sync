@@ -1445,6 +1445,118 @@ def run_sync(args, service, root_folder_id):
     return True
 
 
+def merge_conversations(source_prefix: str, target_prefix: str):
+    """Merge source conversation into target, fixing uuid chain and sessionId."""
+    import uuid as uuid_mod
+
+    # Find matching JSONL files across all project dirs
+    def find_conversation(prefix):
+        matches = []
+        for project_dir in CLAUDE_PROJECTS_DIR.iterdir():
+            if not project_dir.is_dir():
+                continue
+            for f in project_dir.glob(f"{prefix}*.jsonl"):
+                matches.append(f)
+        if not matches:
+            print(f"ERROR: No conversation found matching '{prefix}'")
+            sys.exit(1)
+        if len(matches) > 1:
+            print(f"ERROR: Multiple matches for '{prefix}':")
+            for m in matches:
+                print(f"  {m}")
+            sys.exit(1)
+        return matches[0]
+
+    source_path = find_conversation(source_prefix)
+    target_path = find_conversation(target_prefix)
+    target_session = target_path.stem
+
+    print(f"Source: {source_path.name} ({format_size(source_path.stat().st_size)})")
+    print(f"Target: {target_path.name} ({format_size(target_path.stat().st_size)})")
+
+    # Backup both
+    for p in (source_path, target_path):
+        bak = p.with_suffix(".jsonl.bak")
+        if not bak.exists():
+            import shutil
+            shutil.copy2(p, bak)
+            print(f"Backup: {bak.name}")
+
+    # Read target — split content from trailing metadata
+    target_lines = target_path.read_text().splitlines(keepends=True)
+    content_end = len(target_lines)
+    for i in range(len(target_lines) - 1, -1, -1):
+        d = json.loads(target_lines[i])
+        if d.get("type") in ("last-prompt", "custom-title", "system"):
+            content_end = i
+        else:
+            break
+    target_content = target_lines[:content_end]
+    target_metadata = target_lines[content_end:]
+
+    # Find last uuid in target
+    last_target_uuid = None
+    for line in reversed(target_content):
+        d = json.loads(line)
+        if d.get("uuid"):
+            last_target_uuid = d["uuid"]
+            break
+
+    # Read source — find content range
+    source_lines = source_path.read_text().splitlines(keepends=True)
+    source_start = 0
+    for i, line in enumerate(source_lines):
+        d = json.loads(line)
+        if d.get("type") in ("user", "assistant"):
+            source_start = i
+            break
+    source_end = len(source_lines)
+    for i in range(len(source_lines) - 1, -1, -1):
+        d = json.loads(source_lines[i])
+        if d.get("type") in ("user", "assistant"):
+            source_end = i + 1
+            break
+
+    # Remap uuids and sessionIds
+    old_to_new = {}
+    rewritten = []
+    first_content = True
+    for line in source_lines[source_start:source_end]:
+        d = json.loads(line)
+        if d.get("type") not in ("user", "assistant"):
+            rewritten.append(line)
+            continue
+
+        old_uuid = d.get("uuid")
+        if old_uuid:
+            new_uuid = str(uuid_mod.uuid4())
+            old_to_new[old_uuid] = new_uuid
+            d["uuid"] = new_uuid
+
+        old_parent = d.get("parentUuid")
+        if old_parent is None and first_content:
+            d["parentUuid"] = last_target_uuid
+        elif old_parent is not None and str(old_parent) in old_to_new:
+            d["parentUuid"] = old_to_new[str(old_parent)]
+
+        if d.get("sessionId"):
+            d["sessionId"] = target_session
+
+        first_content = False
+        rewritten.append(json.dumps(d, ensure_ascii=False) + "\n")
+
+    # Write merged
+    with open(target_path, "w") as f:
+        f.writelines(target_content)
+        f.writelines(rewritten)
+        f.writelines(target_metadata)
+
+    msg_count = sum(1 for l in rewritten
+                    if json.loads(l).get("type") in ("user", "assistant"))
+    print(f"Merged {msg_count} messages from {source_path.stem[:8]}… into {target_path.stem[:8]}…")
+    print(f"Result: {format_size(target_path.stat().st_size)}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sync Claude Code history via Google Drive")
     parser.add_argument("--pull", dest="pull_only", action="store_true", help="Only download")
@@ -1462,6 +1574,8 @@ def main():
     parser.add_argument("--background", type=int, nargs="?", const=600, default=None,
                         metavar="SECONDS",
                         help="Run as background daemon, syncing every N seconds (default: 600)")
+    parser.add_argument("--merge", nargs=2, metavar=("SOURCE", "TARGET"),
+                        help="Merge SOURCE conversation into TARGET (prefix match on session ID)")
     args = parser.parse_args()
 
     # --background with no value gets None from argparse; treat as 300s default
@@ -1481,6 +1595,11 @@ def main():
     if not CLAUDE_PROJECTS_DIR.exists():
         print(f"No Claude projects dir at {CLAUDE_PROJECTS_DIR}")
         sys.exit(1)
+
+    # Merge doesn't need Drive access
+    if args.merge:
+        merge_conversations(args.merge[0], args.merge[1])
+        sys.exit(0)
 
     # Local delete doesn't need Drive access
     if args.delete and args.local:
