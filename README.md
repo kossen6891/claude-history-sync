@@ -39,6 +39,7 @@ Conversations are organized by **git remote URL**, so they follow the repo — n
 | 🔄 **Sync** | MD5 checksums skip identical files; when files differ, newer modification time wins |
 | 🏷️ **Names** | Conversation titles (from `/rename`) are synced via `_titles.json` and injected on pull |
 | 🗑️ **Delete** | Remove conversations from Drive with `--delete --repo <name>`, optionally filtered by `--chat` |
+| 🔁 **Background** | Auto-sync with `--background`, writes PID to `.sync.pid` |
 
  🙈 Projects without a git remote are skipped (no way to match across machines).
 
@@ -91,6 +92,33 @@ python sync_claude_history.py --chat df9a,e520       # 💬 comma-separated chat
 python sync_claude_history.py --delete --repo sglang    # 🗑️  delete all conversations for a repo
 python sync_claude_history.py --delete --repo sglang --dry-run # 🗑️  preview delete
 python sync_claude_history.py --delete --repo sgl --chat df9a  # 🗑️  delete specific chat
+python sync_claude_history.py --background                     # 🔁 auto-sync in background
+python sync_claude_history.py --background --repo flash        # 🔁 auto-sync one repo
+python sync_claude_history.py --background 60 --repo flash     # 🔁 custom interval (60s)
+```
+
+### Background sync
+
+Auto-forks a single daemon process. Multiple `--background` calls add/update jobs — no duplicate processes:
+
+```bash
+# Start daemon with a repo (default: every 10 min)
+python sync_claude_history.py --background --repo flashinfer
+# Background daemon started with 1 job(s):
+#   [flashinfer:all] every 600s
+# PID: 12345
+
+# Add another repo (same daemon picks it up)
+python sync_claude_history.py --background --repo sglang
+# Added job [sglang:all]: every 600s
+# Daemon already running (PID 12345), will pick up changes on next cycle
+
+# Update interval for existing job
+python sync_claude_history.py --background 60 --repo flashinfer
+# Updated job [flashinfer:all]: interval 600s -> 60s
+
+tail -f sync.log      # watch live log
+kill $(cat .sync.pid) # stop daemon
 ```
 
 ### Example output

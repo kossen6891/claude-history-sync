@@ -2,4 +2,8 @@ credentials.json
 token.json
 service-account.json
 .repo_cache.json
+.sync.pid
+.sync_jobs.json
+sync.log
 __pycache__/
+.*.swp

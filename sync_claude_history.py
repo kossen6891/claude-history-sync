@@ -36,6 +36,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -798,31 +799,8 @@ def sync_files(service, folder_id, local_dir: Path, args, indent="    "):
 # Main sync logic
 # ---------------------------------------------------------------------------
 
-def main():
-    parser = argparse.ArgumentParser(description="Sync Claude Code history via Google Drive")
-    parser.add_argument("--pull", dest="pull_only", action="store_true", help="Only download")
-    parser.add_argument("--push", dest="push_only", action="store_true", help="Only upload")
-    parser.add_argument("--delete", action="store_true",
-                        help="Delete conversations from Drive (use with --repo and/or --chat)")
-    parser.add_argument("--dry-run", action="store_true", help="Show what would happen")
-    parser.add_argument("-v", "--verbose", action="store_true")
-    parser.add_argument("--repo", type=str, default=None,
-                        help="Filter to repo(s) (comma-separated, substring match on git remote URL)")
-    parser.add_argument("--chat", type=str, default=None, dest="chat_id",
-                        help="Filter to conversation(s) (comma-separated, first 8+ chars of session ID)")
-    args = parser.parse_args()
-
-    if args.delete and not args.repo:
-        print("ERROR: --delete requires --repo")
-        sys.exit(1)
-
-    if not CLAUDE_PROJECTS_DIR.exists():
-        print(f"No Claude projects dir at {CLAUDE_PROJECTS_DIR}")
-        sys.exit(1)
-
-    service = get_drive_service()
-    root_folder_id = get_or_create_folder(service, DRIVE_FOLDER_NAME)
-
+def run_sync(args, service, root_folder_id):
+    """Run one sync cycle. Returns True if any changes were made."""
     # Build local index: git_url_key -> [(project_dir, raw_git_url), ...]
     local_index = build_local_index()
 
@@ -886,7 +864,7 @@ def main():
                     print(f"  [DELETED] {sub}/{fname}")
 
         print("Done.")
-        sys.exit(0)
+        return True
 
     # --- PUSH: upload organized by git remote + relative path subfolder ---
     # Drive structure:
@@ -1076,6 +1054,166 @@ def main():
             print(B)
 
     print("Done.")
+    return True
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Sync Claude Code history via Google Drive")
+    parser.add_argument("--pull", dest="pull_only", action="store_true", help="Only download")
+    parser.add_argument("--push", dest="push_only", action="store_true", help="Only upload")
+    parser.add_argument("--delete", action="store_true",
+                        help="Delete conversations from Drive (use with --repo and/or --chat)")
+    parser.add_argument("--dry-run", action="store_true", help="Show what would happen")
+    parser.add_argument("-v", "--verbose", action="store_true")
+    parser.add_argument("--repo", type=str, default=None,
+                        help="Filter to repo(s) (comma-separated, substring match on git remote URL)")
+    parser.add_argument("--chat", type=str, default=None, dest="chat_id",
+                        help="Filter to conversation(s) (comma-separated, first 8+ chars of session ID)")
+    parser.add_argument("--background", type=int, nargs="?", const=600, default=None,
+                        metavar="SECONDS",
+                        help="Run as background daemon, syncing every N seconds (default: 600)")
+    args = parser.parse_args()
+
+    # --background with no value gets None from argparse; treat as 300s default
+    # Allow: --background 60, --background 300
+    if args.background is not None and args.background <= 0:
+        print("ERROR: --background interval must be positive")
+        sys.exit(1)
+
+    if args.delete and not args.repo:
+        print("ERROR: --delete requires --repo")
+        sys.exit(1)
+
+    if not CLAUDE_PROJECTS_DIR.exists():
+        print(f"No Claude projects dir at {CLAUDE_PROJECTS_DIR}")
+        sys.exit(1)
+
+    service = get_drive_service()
+    root_folder_id = get_or_create_folder(service, DRIVE_FOLDER_NAME)
+
+    if args.background is not None:
+        interval = args.background
+        log_file = SCRIPT_DIR / "sync.log"
+        pid_file = SCRIPT_DIR / ".sync.pid"
+        jobs_file = SCRIPT_DIR / ".sync_jobs.json"
+
+        # Job key: unique per repo+chat combo
+        job_key = f"{args.repo or 'all'}:{args.chat_id or 'all'}"
+
+        # Load existing jobs
+        jobs = {}
+        if jobs_file.exists():
+            try:
+                jobs = json.loads(jobs_file.read_text())
+            except (json.JSONDecodeError, OSError):
+                pass
+
+        # Update/add this job
+        old_interval = jobs.get(job_key, {}).get("interval")
+        jobs.setdefault("_daemon", {})
+        jobs[job_key] = {
+            "repo": args.repo,
+            "chat_id": args.chat_id,
+            "interval": interval,
+        }
+        jobs_file.write_text(json.dumps(jobs, indent=2))
+
+        # Check if daemon is already running
+        daemon_alive = False
+        if pid_file.exists():
+            try:
+                old_pid = int(pid_file.read_text().strip())
+                os.kill(old_pid, 0)
+                daemon_alive = True
+            except (ProcessLookupError, ValueError, OSError):
+                pid_file.unlink(missing_ok=True)
+
+        if daemon_alive:
+            if old_interval is not None:
+                print(f"Updated job [{job_key}]: interval {old_interval}s -> {interval}s")
+            else:
+                print(f"Added job [{job_key}]: every {interval}s")
+            print(f"Daemon already running (PID {old_pid}), will pick up changes on next cycle")
+            print(f"Log: {log_file}")
+            sys.exit(0)
+
+        # No daemon running — fork one
+        pid = os.fork()
+        if pid > 0:
+            # Parent
+            job_count = sum(1 for k in jobs if not k.startswith("_"))
+            print(f"Background daemon started with {job_count} job(s):")
+            for k, v in jobs.items():
+                if not k.startswith("_"):
+                    print(f"  [{k}] every {v['interval']}s")
+            print(f"PID: {pid}")
+            print(f"Log: {log_file}")
+            print(f"Stop: kill {pid}")
+            pid_file.write_text(str(pid))
+            sys.exit(0)
+
+        # Child: detach and run daemon
+        os.setsid()
+        log_fd = open(log_file, "a")
+        os.dup2(log_fd.fileno(), sys.stdout.fileno())
+        os.dup2(log_fd.fileno(), sys.stderr.fileno())
+
+        # Write daemon PID
+        daemon_pid = os.getpid()
+        try:
+            jobs = json.loads(jobs_file.read_text())
+            jobs["_daemon"] = {"pid": daemon_pid}
+            jobs_file.write_text(json.dumps(jobs, indent=2))
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        # Track last-run time per job
+        last_run = {}
+
+        try:
+            while True:
+                # Reload jobs file each cycle (picks up new/updated jobs)
+                try:
+                    jobs = json.loads(jobs_file.read_text())
+                except (json.JSONDecodeError, OSError):
+                    jobs = {}
+
+                if not jobs:
+                    time.sleep(10)
+                    continue
+
+                now = time.time()
+                for job_key, job in jobs.items():
+                    if job_key.startswith("_"):
+                        continue
+                    job_interval = job.get("interval", 600)
+                    if now - last_run.get(job_key, 0) < job_interval:
+                        continue
+
+                    # Build args for this job
+                    job_args = argparse.Namespace(
+                        pull_only=False, push_only=False, delete=False,
+                        dry_run=False, verbose=False,
+                        repo=job.get("repo"), chat_id=job.get("chat_id"),
+                        background=None,
+                    )
+                    try:
+                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        print(f"\n[{timestamp}] Syncing [{job_key}]...", flush=True)
+                        run_sync(job_args, service, root_folder_id)
+                    except Exception as e:
+                        print(f"[ERROR] [{job_key}] {e}", flush=True)
+                    last_run[job_key] = time.time()
+
+                # Sleep in small increments to stay responsive to new jobs
+                time.sleep(10)
+        except KeyboardInterrupt:
+            pass
+        finally:
+            pid_file.unlink(missing_ok=True)
+            log_fd.close()
+    else:
+        run_sync(args, service, root_folder_id)
 
 
 if __name__ == "__main__":

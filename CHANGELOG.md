@@ -1,5 +1,9 @@
 # Changelog
 
+## v0.1.6
+
+- Add `--background` flag for auto-sync daemon (default: every 10 min), writes PID to `.sync.pid`
+
 ## v0.1.5
 
 - Fix scan_local_git_repos hanging by limiting os.walk depth and stopping at .git boundaries
