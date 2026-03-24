@@ -1686,6 +1686,48 @@ def _setup_keepalive(keepalive_script: Path, state_dir: Path) -> str:
     except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
         pass
 
+    # Try systemd user service
+    try:
+        # Check if systemd user bus is available
+        result = subprocess.run(
+            ["systemctl", "--user", "status"],
+            capture_output=True, timeout=5,
+        )
+        if result.returncode in (0, 3):  # 0=running, 3=no units but bus works
+            service_name = "claude-history-sync"
+            service_dir = Path.home() / ".config" / "systemd" / "user"
+            service_dir.mkdir(parents=True, exist_ok=True)
+            service_file = service_dir / f"{service_name}.service"
+            service_file.write_text(
+                f"[Unit]\n"
+                f"Description=Claude history sync keepalive\n\n"
+                f"[Service]\n"
+                f"Type=oneshot\n"
+                f"ExecStart={keepalive_script}\n"
+                f"Environment=SYNC_STATE_DIR={state_dir}\n\n"
+            )
+            timer_file = service_dir / f"{service_name}.timer"
+            timer_file.write_text(
+                f"[Unit]\n"
+                f"Description=Claude history sync keepalive timer\n\n"
+                f"[Timer]\n"
+                f"OnBootSec=1min\n"
+                f"OnUnitActiveSec=2min\n"
+                f"Persistent=true\n\n"
+                f"[Install]\n"
+                f"WantedBy=timers.target\n"
+            )
+            subprocess.run(["systemctl", "--user", "daemon-reload"],
+                           capture_output=True, timeout=5)
+            proc = subprocess.run(
+                ["systemctl", "--user", "enable", "--now", f"{service_name}.timer"],
+                capture_output=True, timeout=5,
+            )
+            if proc.returncode == 0:
+                return "systemd"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
     # Fallback to watchdog
     return "watchdog"
 

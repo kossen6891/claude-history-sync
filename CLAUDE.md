@@ -23,7 +23,7 @@ Tests cover:
 - Error handling (clean exit, no tracebacks)
 - Conversation counts and sizes are accurate
 
-**Important**: Tests must not interfere with running background sync. The background test uses `SYNC_STATE_DIR` (via `tmp_path`) so it writes to a temp dir instead of `.sync.pid`/`.sync_jobs.json`. If you must kill the daemon during development, restore it immediately after with `python sync_claude_history.py --background`.
+**Important**: Tests must not interfere with running background sync. The background test uses `SYNC_STATE_DIR` (via `tmp_path`) so it writes to a temp dir instead of `.sync.pid`/`.sync_jobs.json`. If you must kill the daemon during development, restore the jobs in sync immediately after with `python sync_claude_history.py --background`.
 
 ### Security (CRITICAL)
 
