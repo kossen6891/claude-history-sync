@@ -1255,17 +1255,44 @@ def run_sync(args, service, root_folder_id):
     #         def.jsonl
     push_printed_any = False
     if not args.pull_only:
+        # Pre-fetch: ensure all repo folders exist and batch-list their subfolders
+        push_repos = []  # (url_key, entries, repo_folder_id)
         for url_key, entries in sorted(git_projects.items()):
             raw_url = entries[0][1]
             if not repo_matches_filter(raw_url, args.repo):
                 continue
             repo_folder_id = get_or_create_folder(service, url_key, root_folder_id)
+            push_repos.append((url_key, entries, repo_folder_id))
+
+        # Batch: list all repo subfolders + ensure subfolder existence
+        repo_fids = {url_key: rfid for url_key, _, rfid in push_repos}
+        all_repo_subfolders = batch_list_drive_folders(service, repo_fids) if repo_fids else {}
+
+        # Ensure all subfolders exist and collect their IDs
+        sf_ids = {}  # (url_key, subfolder_name) -> folder_id
+        for url_key, entries, repo_folder_id in push_repos:
+            existing_subs = all_repo_subfolders.get(url_key, {})
+            for _, _, _, rel_path in entries:
+                sf_name = rel_path_to_drive_subfolder(rel_path)
+                if sf_name in existing_subs:
+                    sf_ids[(url_key, sf_name)] = existing_subs[sf_name]
+                else:
+                    sf_ids[(url_key, sf_name)] = get_or_create_folder(
+                        service, sf_name, repo_folder_id)
+
+        # Batch: list all remote files in all subfolders
+        sf_lookup = {f"{uk}/{sn}": fid for (uk, sn), fid in sf_ids.items()}
+        all_sf_files = batch_list_remote_files(service, sf_lookup) if sf_lookup else {}
+
+        for url_key, entries, repo_folder_id in push_repos:
+            raw_url = entries[0][1]
 
             # Store raw URL in folder description for fast lookup during pull
-            service.files().update(
-                fileId=repo_folder_id,
-                body={"description": raw_url},
-            ).execute()
+            if not args.dry_run:
+                service.files().update(
+                    fileId=repo_folder_id,
+                    body={"description": raw_url},
+                ).execute()
 
             # Update metadata
             meta = {
@@ -1276,14 +1303,19 @@ def run_sync(args, service, root_folder_id):
                     for d, _, _, rel in entries
                 ],
             }
-            repo_files = list_remote_files(service, repo_folder_id)
-            upload_string(
-                service,
-                json.dumps(meta, indent=2),
-                "_metadata.json",
-                repo_folder_id,
-                existing_id=repo_files.get("_metadata.json", {}).get("id"),
-            )
+            # Use pre-fetched file list for the first subfolder to find _metadata.json
+            first_sf_name = rel_path_to_drive_subfolder(entries[0][3])
+            repo_files = all_sf_files.get(f"{url_key}/{first_sf_name}", {})
+            if not args.dry_run:
+                # Need repo-level files for _metadata.json — check if already fetched
+                repo_level_files = list_remote_files(service, repo_folder_id)
+                upload_string(
+                    service,
+                    json.dumps(meta, indent=2),
+                    "_metadata.json",
+                    repo_folder_id,
+                    existing_id=repo_level_files.get("_metadata.json", {}).get("id"),
+                )
 
             B = "  ╠═══════════════════════════════════════════════════════════════════════════"
             if not push_printed_any:
@@ -1295,15 +1327,13 @@ def run_sync(args, service, root_folder_id):
             print(f"  ║ ----------------------------------------------------------------------")
             for project_dir, _, _, rel_path in entries:
                 subfolder_name = rel_path_to_drive_subfolder(rel_path)
-                subfolder_id = get_or_create_folder(
-                    service, subfolder_name, repo_folder_id
-                )
+                subfolder_id = sf_ids[(url_key, subfolder_name)]
 
                 local_jsons = {p.name: p for p in sorted(project_dir.glob("*.jsonl"))
                                if not is_empty_conversation(p)}
                 local_count = len(local_jsons)
                 local_size = sum(p.stat().st_size for p in local_jsons.values())
-                remote_sub_files = list_remote_files(service, subfolder_id)
+                remote_sub_files = all_sf_files.get(f"{url_key}/{subfolder_name}", {})
                 remote_count = sum(1 for k in remote_sub_files if k.endswith(".jsonl"))
                 remote_size = sum(
                     int(f.get("size", 0)) for k, f in remote_sub_files.items()
@@ -1618,6 +1648,156 @@ def merge_conversations(source_prefix: str, target_prefix: str):
     print(f"Result: {format_size(target_path.stat().st_size)}")
 
 
+def _setup_keepalive(keepalive_script: Path, state_dir: Path) -> str:
+    """Install a keepalive mechanism. Returns 'cron', 'watchdog', or 'none'."""
+    keepalive_log = state_dir / "keepalive.log"
+    cron_line = f"*/2 * * * * {keepalive_script} >> {keepalive_log} 2>&1"
+
+    # Try cron first
+    try:
+        # Check if cron is running
+        result = subprocess.run(["pgrep", "-x", "cron"], capture_output=True)
+        if result.returncode != 0:
+            # Try to start it
+            subprocess.run(["sudo", "service", "cron", "start"],
+                           capture_output=True, timeout=5)
+            result = subprocess.run(["pgrep", "-x", "cron"], capture_output=True)
+
+        if result.returncode == 0:
+            # Check if our cron entry already exists
+            existing = subprocess.run(
+                ["sudo", "crontab", "-u", os.environ.get("USER", "tiger"), "-l"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if str(keepalive_script) not in existing.stdout:
+                # Add our entry
+                new_crontab = existing.stdout.rstrip("\n")
+                if new_crontab:
+                    new_crontab += "\n"
+                new_crontab += cron_line + "\n"
+                proc = subprocess.run(
+                    ["sudo", "crontab", "-u", os.environ.get("USER", "tiger"), "-"],
+                    input=new_crontab, text=True, capture_output=True, timeout=5,
+                )
+                if proc.returncode == 0:
+                    return "cron"
+            else:
+                return "cron"
+    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+        pass
+
+    # Fallback to watchdog
+    return "watchdog"
+
+
+def _run_daemon_loop(pid_file, jobs_file, service, root_folder_id):
+    """Main daemon sync loop."""
+    daemon_pid = os.getpid()
+    try:
+        jobs = json.loads(jobs_file.read_text())
+        jobs["_daemon"] = {"pid": daemon_pid}
+        jobs_file.write_text(json.dumps(jobs, indent=2))
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    last_run = {}
+    fail_count = {}
+
+    try:
+        while True:
+            try:
+                jobs = json.loads(jobs_file.read_text())
+            except (json.JSONDecodeError, OSError):
+                jobs = {}
+
+            if not jobs:
+                time.sleep(10)
+                continue
+
+            now = time.time()
+            for job_key, job in list(jobs.items()):
+                if job_key.startswith("_"):
+                    continue
+                job_interval = job.get("interval", 600)
+                failures = fail_count.get(job_key, 0)
+                effective_interval = min(job_interval * (2 ** failures), job_interval * 4)
+                if now - last_run.get(job_key, 0) < effective_interval:
+                    continue
+
+                job_args = argparse.Namespace(
+                    pull_only=False, push_only=False, delete=False,
+                    dry_run=False, verbose=False,
+                    repo=job.get("repo"), chat_id=job.get("chat_id"),
+                    background=None, local=False,
+                )
+                try:
+                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"\n[{timestamp}] Syncing [{job_key}]...", flush=True)
+                    run_sync(job_args, service, root_folder_id)
+                    fail_count[job_key] = 0
+                except BaseException as e:
+                    fail_count[job_key] = failures + 1
+                    backoff = min(job_interval * (2 ** (failures + 1)), job_interval * 4)
+                    print(f"[ERROR] [{job_key}] {type(e).__name__}: {e} "
+                          f"(failure {failures + 1}, next retry in {backoff}s)",
+                          flush=True)
+                last_run[job_key] = time.time()
+
+            time.sleep(10)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        pid_file.unlink(missing_ok=True)
+
+
+def _run_watchdog(pid_file, jobs_file, log_file, service, root_folder_id):
+    """Watchdog: forks a worker, restarts it if it dies. Never returns."""
+    import signal
+
+    def _spawn_worker():
+        wpid = os.fork()
+        if wpid == 0:
+            # Worker child
+            _run_daemon_loop(pid_file, jobs_file, service, root_folder_id)
+            os._exit(0)
+        return wpid
+
+    # Write our (watchdog) PID — we're the one that should be killed to stop everything
+    pid_file.write_text(str(os.getpid()))
+    try:
+        jobs = json.loads(jobs_file.read_text())
+        jobs["_daemon"] = {"pid": os.getpid()}
+        jobs_file.write_text(json.dumps(jobs, indent=2))
+    except (json.JSONDecodeError, OSError):
+        pass
+
+    worker_pid = _spawn_worker()
+
+    def _cleanup(signum, frame):
+        try:
+            os.kill(worker_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        pid_file.unlink(missing_ok=True)
+        os._exit(0)
+
+    signal.signal(signal.SIGTERM, _cleanup)
+    signal.signal(signal.SIGINT, _cleanup)
+
+    log_fd = open(log_file, "a")
+    while True:
+        try:
+            _, status = os.waitpid(worker_pid, 0)
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            reason = f"exit code {os.WEXITSTATUS(status)}" if os.WIFEXITED(status) else f"signal {os.WTERMSIG(status)}"
+            log_fd.write(f"\n[{timestamp}] Worker died ({reason}), restarting in 5s...\n")
+            log_fd.flush()
+            time.sleep(5)
+            worker_pid = _spawn_worker()
+        except KeyboardInterrupt:
+            _cleanup(None, None)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Sync Claude Code history via Google Drive")
     parser.add_argument("--pull", dest="pull_only", action="store_true", help="Only download")
@@ -1677,16 +1857,6 @@ def main():
         pid_file = STATE_DIR / ".sync.pid"
         jobs_file = STATE_DIR / ".sync_jobs.json"
 
-        # Resolve prefixes to full IDs for deduplication
-        full_repo = resolve_repo_filter(args.repo) if args.repo else None
-        full_chat, chat_repo = resolve_chat_id(args.chat_id) if args.chat_id else (None, None)
-        # If repo not specified but chat resolved to a repo, use it
-        if full_repo is None and chat_repo is not None:
-            full_repo = chat_repo
-
-        # Job key: unique per resolved repo+chat combo
-        job_key = f"{full_repo or 'all'}:{full_chat or 'all'}"
-
         # Load existing jobs
         jobs = {}
         if jobs_file.exists():
@@ -1695,22 +1865,47 @@ def main():
             except (json.JSONDecodeError, OSError):
                 pass
 
+        # Split comma-separated repos/chats into individual jobs
+        repo_list = [r.strip() for r in args.repo.split(",")] if args.repo else [None]
+        chat_list = [c.strip() for c in args.chat_id.split(",")] if args.chat_id else [None]
+
         # If --background with no repo/chat and jobs already exist, this is a restart
         restart_only = (args.repo is None and args.chat_id is None
                         and any(k for k in jobs if not k.startswith("_")))
+
+        added_jobs = []
         if not restart_only:
-            # Check for existing jobs that match the same resolved key
-            # (e.g. "de1128" and "de11280" both resolve to same full ID)
-            old_interval = jobs.get(job_key, {}).get("interval")
             jobs.setdefault("_daemon", {})
-            jobs[job_key] = {
-                "repo": full_repo,
-                "chat_id": full_chat,
-                "interval": interval,
-            }
+            for repo_prefix in repo_list:
+                for chat_prefix in chat_list:
+                    full_repo = resolve_repo_filter(repo_prefix) if repo_prefix else None
+                    full_chat, chat_repo = resolve_chat_id(chat_prefix) if chat_prefix else (None, None)
+                    if full_repo is None and chat_repo is not None:
+                        full_repo = chat_repo
+
+                    job_key = f"{full_repo or 'all'}:{full_chat or 'all'}"
+                    # Remove stale keys that resolve to the same job
+                    # (e.g. "all:e520" when we now have the full ID)
+                    for old_key in list(jobs.keys()):
+                        if old_key.startswith("_") or old_key == job_key:
+                            continue
+                        old_job = jobs[old_key]
+                        old_chat = old_job.get("chat_id", "")
+                        if (full_chat and old_chat and
+                                full_chat.startswith(old_chat) and old_key != job_key):
+                            del jobs[old_key]
+                            added_jobs.append(f"Removed stale [{old_key}] (merged into [{job_key}])")
+                    old_interval = jobs.get(job_key, {}).get("interval")
+                    jobs[job_key] = {
+                        "repo": full_repo,
+                        "chat_id": full_chat,
+                        "interval": interval,
+                    }
+                    if old_interval is not None:
+                        added_jobs.append(f"Updated [{job_key}]: {old_interval}s -> {interval}s")
+                    else:
+                        added_jobs.append(f"Added [{job_key}]: every {interval}s")
             jobs_file.write_text(json.dumps(jobs, indent=2))
-        else:
-            old_interval = None
 
         # Check if daemon is already running
         daemon_alive = False
@@ -1723,13 +1918,15 @@ def main():
                 pid_file.unlink(missing_ok=True)
 
         if daemon_alive:
-            if old_interval is not None:
-                print(f"Updated job [{job_key}]: interval {old_interval}s -> {interval}s")
-            else:
-                print(f"Added job [{job_key}]: every {interval}s")
+            for msg in added_jobs:
+                print(msg)
             print(f"Daemon already running (PID {old_pid}), will pick up changes on next cycle")
             print(f"Log: {log_file}")
             sys.exit(0)
+
+        # Set up keepalive (cron preferred, watchdog fallback)
+        keepalive_script = SCRIPT_DIR / "keepalive.sh"
+        keepalive_method = _setup_keepalive(keepalive_script, STATE_DIR)
 
         # No daemon running — fork one
         pid = os.fork()
@@ -1742,6 +1939,7 @@ def main():
                     print(f"  [{k}] every {v['interval']}s")
             print(f"PID: {pid}")
             print(f"Log: {log_file}")
+            print(f"Keepalive: {keepalive_method}")
             print(f"Stop: kill {pid}")
             pid_file.write_text(str(pid))
             sys.exit(0)
@@ -1752,69 +1950,12 @@ def main():
         os.dup2(log_fd.fileno(), sys.stdout.fileno())
         os.dup2(log_fd.fileno(), sys.stderr.fileno())
 
-        # Write daemon PID
-        daemon_pid = os.getpid()
-        try:
-            jobs = json.loads(jobs_file.read_text())
-            jobs["_daemon"] = {"pid": daemon_pid}
-            jobs_file.write_text(json.dumps(jobs, indent=2))
-        except (json.JSONDecodeError, OSError):
-            pass
-
-        # Track last-run time and consecutive failures per job
-        last_run = {}
-        fail_count = {}
-
-        try:
-            while True:
-                # Reload jobs file each cycle (picks up new/updated jobs)
-                try:
-                    jobs = json.loads(jobs_file.read_text())
-                except (json.JSONDecodeError, OSError):
-                    jobs = {}
-
-                if not jobs:
-                    time.sleep(10)
-                    continue
-
-                now = time.time()
-                for job_key, job in list(jobs.items()):
-                    if job_key.startswith("_"):
-                        continue
-                    job_interval = job.get("interval", 600)
-                    # Exponential backoff on repeated failures (max 4x interval)
-                    failures = fail_count.get(job_key, 0)
-                    effective_interval = min(job_interval * (2 ** failures), job_interval * 4)
-                    if now - last_run.get(job_key, 0) < effective_interval:
-                        continue
-
-                    # Build args for this job
-                    job_args = argparse.Namespace(
-                        pull_only=False, push_only=False, delete=False,
-                        dry_run=False, verbose=False,
-                        repo=job.get("repo"), chat_id=job.get("chat_id"),
-                        background=None, local=False,
-                    )
-                    try:
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        print(f"\n[{timestamp}] Syncing [{job_key}]...", flush=True)
-                        run_sync(job_args, service, root_folder_id)
-                        fail_count[job_key] = 0  # reset on success
-                    except BaseException as e:
-                        fail_count[job_key] = failures + 1
-                        backoff = min(job_interval * (2 ** (failures + 1)), job_interval * 4)
-                        print(f"[ERROR] [{job_key}] {type(e).__name__}: {e} "
-                              f"(failure {failures + 1}, next retry in {backoff}s)",
-                              flush=True)
-                    last_run[job_key] = time.time()
-
-                # Sleep in small increments to stay responsive to new jobs
-                time.sleep(10)
-        except KeyboardInterrupt:
-            pass
-        finally:
-            pid_file.unlink(missing_ok=True)
-            log_fd.close()
+        # If using watchdog, fork again: parent = watchdog, child = worker
+        if keepalive_method == "watchdog":
+            _run_watchdog(pid_file, jobs_file, log_file, service, root_folder_id)
+            # _run_watchdog never returns
+        else:
+            _run_daemon_loop(pid_file, jobs_file, service, root_folder_id)
     else:
         # Warn if background daemon died
         jobs_file = STATE_DIR / ".sync_jobs.json"

@@ -5,5 +5,6 @@ service-account.json
 .sync.pid
 .sync_jobs.json
 sync.log
+keepalive.log
 __pycache__/
 .*.swp
