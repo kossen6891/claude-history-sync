@@ -2009,20 +2009,47 @@ def main():
         else:
             _run_daemon_loop(pid_file, jobs_file, service, root_folder_id)
     else:
-        # Warn if background daemon died
+        # Auto-restart background daemon if it died
         jobs_file = STATE_DIR / ".sync_jobs.json"
         pid_file = STATE_DIR / ".sync.pid"
-        if jobs_file.exists() and pid_file.exists():
-            try:
-                old_pid = int(pid_file.read_text().strip())
-                os.kill(old_pid, 0)
-            except (ProcessLookupError, ValueError, OSError):
+        if jobs_file.exists():
+            daemon_dead = False
+            if pid_file.exists():
+                try:
+                    old_pid = int(pid_file.read_text().strip())
+                    os.kill(old_pid, 0)
+                except (ProcessLookupError, ValueError, OSError):
+                    daemon_dead = True
+                    pid_file.unlink(missing_ok=True)
+            else:
+                daemon_dead = True
+
+            if daemon_dead:
                 jobs = json.loads(jobs_file.read_text())
                 job_count = sum(1 for k in jobs if not k.startswith("_"))
                 if job_count:
-                    print(f"⚠ Background daemon (PID {pid_file.read_text().strip()}) is dead "
-                          f"with {job_count} job(s) pending. Run --background to restart.")
-                pid_file.unlink(missing_ok=True)
+                    print(f"Restarting background daemon ({job_count} job(s))...")
+                    keepalive_script = SCRIPT_DIR / "keepalive.sh"
+                    keepalive_method = _setup_keepalive(keepalive_script, STATE_DIR)
+                    log_file = STATE_DIR / "sync.log"
+                    pid = os.fork()
+                    if pid == 0:
+                        # Child: become daemon with fresh Drive connection
+                        os.setsid()
+                        log_fd = open(log_file, "a")
+                        os.dup2(log_fd.fileno(), sys.stdout.fileno())
+                        os.dup2(log_fd.fileno(), sys.stderr.fileno())
+                        child_service = get_drive_service()
+                        child_root = get_or_create_folder(child_service, DRIVE_FOLDER_NAME)
+                        if keepalive_method == "watchdog":
+                            _run_watchdog(pid_file, jobs_file, log_file, child_service, child_root)
+                        else:
+                            _run_daemon_loop(pid_file, jobs_file, child_service, child_root)
+                        os._exit(0)
+                    # Parent: record PID and continue
+                    pid_file.write_text(str(pid))
+                    print(f"PID: {pid} (keepalive: {keepalive_method})")
+
         run_sync(args, service, root_folder_id)
 
 
