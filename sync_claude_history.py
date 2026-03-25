@@ -924,15 +924,25 @@ def sync_files(service, folder_id, local_dir: Path, args, indent="    ",
                 remote["modifiedTime"].replace("Z", "+00:00")
             ).timestamp()
 
+            remote_size = int(remote.get("size", 0))
+
             if local_mtime > remote_mtime and not args.pull_only:
-                action = "WOULD PUSH" if args.dry_run else "PUSHED"
-                if not args.dry_run:
-                    media = MediaFileUpload(str(local_path))
-                    service.files().update(fileId=remote["id"], media_body=media).execute()
-                print(f"{indent}[{action}] {fname} ({format_size(local_size)}, {format_time(local_mtime)})")
-                pushed += 1
+                # Guard: if local is newer but much smaller (<=95% of remote),
+                # the local file was likely overwritten/corrupted — pull remote instead
+                if remote_size > 0 and local_size <= remote_size * 0.95:
+                    action = "WOULD PULL (local shrunk)" if args.dry_run else "PULLED (local shrunk)"
+                    if not args.dry_run:
+                        download_file(service, remote["id"], local_path)
+                    print(f"{indent}[{action}] {fname} ({format_size(remote_size)} remote > {format_size(local_size)} local)")
+                    pulled += 1
+                else:
+                    action = "WOULD PUSH" if args.dry_run else "PUSHED"
+                    if not args.dry_run:
+                        media = MediaFileUpload(str(local_path))
+                        service.files().update(fileId=remote["id"], media_body=media).execute()
+                    print(f"{indent}[{action}] {fname} ({format_size(local_size)}, {format_time(local_mtime)})")
+                    pushed += 1
             elif remote_mtime > local_mtime and not args.push_only:
-                remote_size = int(remote.get("size", 0))
                 action = "WOULD PULL" if args.dry_run else "PULLED"
                 if not args.dry_run:
                     download_file(service, remote["id"], local_path)
