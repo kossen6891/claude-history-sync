@@ -1457,6 +1457,7 @@ def run_sync(args, service, root_folder_id):
         sf_files_all = batch_list_remote_files(service, sf_lookup) if sf_lookup else {}
 
         pull_printed_first = push_printed_any
+        local_repos = scan_local_git_repos()
         for url_key, repo_fid in pull_repos:
             raw_url = repo_meta.get(url_key, url_key)
             remote_subfolders = all_subfolders.get(url_key)
@@ -1468,24 +1469,33 @@ def run_sync(args, service, root_folder_id):
                 continue
 
             if url_key not in local_by_url:
-                total_convos = 0
-                total_size = 0
-                for sf_name in remote_subfolders:
-                    sf_files = sf_files_all.get((url_key, sf_name), {})
-                    total_convos += sum(1 for k in sf_files if k.endswith(".jsonl"))
-                    total_size += sum(
-                        int(f.get("size", 0)) for k, f in sf_files.items()
-                        if k.endswith(".jsonl")
-                    )
-                B = "  ╠═══════════════════════════════════════════════════════════════════════════"
-                if not pull_printed_first:
+                # Try to find local git clone to auto-create Claude project dir
+                found_root = None
+                if url_key in local_repos:
+                    found_root = local_repos[url_key][0]
+                if found_root:
+                    # Populate local_by_url with git_root only (no project_dir yet)
+                    # so pull_git_root is set and subfolder sync auto-creates project dirs
+                    local_by_url[url_key] = {".": (None, found_root)}
+                else:
+                    total_convos = 0
+                    total_size = 0
+                    for sf_name in remote_subfolders:
+                        sf_files = sf_files_all.get((url_key, sf_name), {})
+                        total_convos += sum(1 for k in sf_files if k.endswith(".jsonl"))
+                        total_size += sum(
+                            int(f.get("size", 0)) for k, f in sf_files.items()
+                            if k.endswith(".jsonl")
+                        )
+                    B = "  ╠═══════════════════════════════════════════════════════════════════════════"
+                    if not pull_printed_first:
+                        print(B)
+                        pull_printed_first = True
+                    print(f"  ║ {raw_url}  (no local clone)")
+                    print(f"  ║ ----------------------------------------------------------------------")
+                    print(f"  ║ {'.':<35s} {total_convos:>2} remote ({format_size(total_size):>8})")
                     print(B)
-                    pull_printed_first = True
-                print(f"  ║ {raw_url}  (no local clone)")
-                print(f"  ║ ----------------------------------------------------------------------")
-                print(f"  ║ {'.':<35s} {total_convos:>2} remote ({format_size(total_size):>8})")
-                print(B)
-                continue
+                    continue
 
             local_map = local_by_url[url_key]
 
@@ -1513,7 +1523,7 @@ def run_sync(args, service, root_folder_id):
 
                 subdir_label = "." if rel_path == "." else rel_path
 
-                if rel_path in local_map:
+                if rel_path in local_map and local_map[rel_path][0] is not None:
                     project_dir, _ = local_map[rel_path]
                     local_jsons = {p.name: p for p in sorted(project_dir.glob("*.jsonl"))
                                    if not is_empty_conversation(p)}
@@ -1573,8 +1583,8 @@ def run_sync(args, service, root_folder_id):
                                 print(f"  ║   => would push {pushed}, would pull {pulled}, {skipped} unchanged")
                             else:
                                 print(f"  ║   => {pushed} pushed, {pulled} pulled, {skipped} unchanged")
-                    else:
-                        print(f"  ║ {subdir_label:<35s} {'--':>17}  {remote_count:>2} remote ({format_size(remote_size):>8})  (no local project)")
+                    elif remote_count > 0:
+                        print(f"  ║ {subdir_label:<35s} {'--':>17}  {remote_count:>2} remote ({format_size(remote_size):>8})")
             print(B)
 
     print("Done.")
