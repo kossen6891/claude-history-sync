@@ -1545,7 +1545,36 @@ def run_sync(args, service, root_folder_id):
                         else:
                             print(f"  ║   => {pushed} pushed, {pulled} pulled, {skipped} unchanged")
                 else:
-                    print(f"  ║ {subdir_label:<35s} {'--':>17}  {remote_count:>2} remote ({format_size(remote_size):>8})  (no local project)")
+                    # Git root is known — create the Claude project dir for this subfolder
+                    if pull_git_root and remote_count > 0:
+                        if rel_path == ".":
+                            full_path = pull_git_root
+                        else:
+                            full_path = os.path.join(pull_git_root, rel_path)
+                        # Claude encodes /foo/bar_baz as -foo-bar-baz
+                        encoded = full_path.replace("/", "-").replace("_", "-").replace(".", "-")
+                        project_dir = CLAUDE_PROJECTS_DIR / encoded
+                        if not args.dry_run:
+                            project_dir.mkdir(parents=True, exist_ok=True)
+                        local_jsons = {}
+                        local_count = 0
+                        local_size = 0
+                        print(f"  ║ {subdir_label:<35s} {local_count:>2} local ({format_size(local_size):>8})  {remote_count:>2} remote ({format_size(remote_size):>8})  (created)")
+
+                        pushed, pulled, skipped = sync_files(
+                            service, subfolder_id, project_dir, args, indent="  ║   ",
+                            remote_files=remote_sub_files, local_jsons=local_jsons,
+                        )
+                        mem_pushed, mem_pulled = sync_memory(
+                            service, subfolder_id, project_dir, args, indent="  ║   ",
+                        )
+                        if pushed or pulled:
+                            if args.dry_run:
+                                print(f"  ║   => would push {pushed}, would pull {pulled}, {skipped} unchanged")
+                            else:
+                                print(f"  ║   => {pushed} pushed, {pulled} pulled, {skipped} unchanged")
+                    else:
+                        print(f"  ║ {subdir_label:<35s} {'--':>17}  {remote_count:>2} remote ({format_size(remote_size):>8})  (no local project)")
             print(B)
 
     print("Done.")
