@@ -167,8 +167,14 @@ def get_drive_service():
         creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), SCOPES)
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception as e:
+                print(f"Token refresh failed: {e}")
+                print("Removing stale token, re-authenticating...")
+                TOKEN_PATH.unlink(missing_ok=True)
+                creds = None
+        if not creds or not creds.valid:
             if not CREDENTIALS_PATH.exists():
                 print(f"ERROR: No auth credentials found.")
                 print(f"Place one of these in {SCRIPT_DIR}:")
@@ -1788,11 +1794,24 @@ def _run_daemon_loop(pid_file, jobs_file, service, root_folder_id):
                     run_sync(job_args, service, root_folder_id)
                     fail_count[job_key] = 0
                 except BaseException as e:
+                    err_str = str(e)
                     fail_count[job_key] = failures + 1
                     backoff = min(job_interval * (2 ** (failures + 1)), job_interval * 4)
-                    print(f"[ERROR] [{job_key}] {type(e).__name__}: {e} "
-                          f"(failure {failures + 1}, next retry in {backoff}s)",
-                          flush=True)
+                    # Token expired — try to re-auth for next cycle
+                    if "invalid_grant" in err_str or "expired" in err_str.lower():
+                        print(f"[TOKEN EXPIRED] Refreshing credentials...", flush=True)
+                        try:
+                            service = get_drive_service()
+                            root_folder_id = get_or_create_folder(service, DRIVE_FOLDER_NAME)
+                            fail_count[job_key] = 0  # reset — next cycle will use fresh creds
+                            print(f"[TOKEN REFRESHED] Will retry on next cycle", flush=True)
+                        except Exception as auth_e:
+                            print(f"[AUTH FAILED] {auth_e} — run: rm token.json && python sync_claude_history.py --dry-run",
+                                  flush=True)
+                    else:
+                        print(f"[ERROR] [{job_key}] {type(e).__name__}: {e} "
+                              f"(failure {failures + 1}, next retry in {backoff}s)",
+                              flush=True)
                 last_run[job_key] = time.time()
 
             time.sleep(10)
