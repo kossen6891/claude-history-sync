@@ -864,7 +864,7 @@ def resolve_repo_filter(repo_filter: str) -> str:
     matches = set()
     for url_key, entries in index.items():
         for _, raw_url, _, _ in entries:
-            if repo_filter.lower() in raw_url.lower():
+            if raw_url and repo_filter.lower() in raw_url.lower():
                 matches.add(raw_url)
     if len(matches) == 1:
         return matches.pop()
