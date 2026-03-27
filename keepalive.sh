@@ -22,10 +22,19 @@ print(sum(1 for k in jobs if not k.startswith('_')))
 # Check if daemon is alive
 if [ -f "$PID_FILE" ]; then
     OLD_PID=$(cat "$PID_FILE" 2>/dev/null)
-    kill -0 "$OLD_PID" 2>/dev/null && _exit 0
+    if kill -0 "$OLD_PID" 2>/dev/null; then
+        # Daemon alive — kill any OTHER orphaned sync processes
+        pgrep -f "sync_claude_history.py --background" | while read P; do
+            [ "$P" != "$OLD_PID" ] && kill -9 "$P" 2>/dev/null
+        done
+        _exit 0
+    fi
 fi
 
-# Daemon is dead or missing — restart with existing jobs
-echo "[$(date '+%Y-%m-%d %H:%M:%S')] Restarting daemon with $JOB_COUNT job(s)..."
+# Daemon is dead or missing — kill ALL orphaned sync processes first
+pkill -9 -f "sync_claude_history.py --background" 2>/dev/null
 rm -f "$PID_FILE"
+sleep 1
+
+echo "[$(date '+%Y-%m-%d %H:%M:%S')] Restarting daemon with $JOB_COUNT job(s)..."
 python3 "$SYNC_DIR/sync_claude_history.py" --background

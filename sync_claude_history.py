@@ -1703,6 +1703,48 @@ def merge_conversations(source_prefix: str, target_prefix: str):
     print(f"Result: {format_size(target_path.stat().st_size)}")
 
 
+def _kill_pid_tree(pid):
+    """Kill a process and all its children."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(pid)], capture_output=True, text=True)
+        for p in result.stdout.strip().split("\n"):
+            if p.strip():
+                _kill_pid_tree(int(p))
+    except (FileNotFoundError, OSError, ValueError):
+        pass
+    try:
+        os.kill(pid, 9)
+    except (ProcessLookupError, OSError):
+        pass
+
+
+def _kill_existing_daemon(pid_file: Path, jobs_file: Path = None):
+    """Kill any existing daemon process and its children."""
+    pids_to_kill = set()
+
+    # From PID file
+    if pid_file.exists():
+        try:
+            pids_to_kill.add(int(pid_file.read_text().strip()))
+        except (ValueError, OSError):
+            pass
+        pid_file.unlink(missing_ok=True)
+
+    # From jobs file _daemon.pid
+    if jobs_file and jobs_file.exists():
+        try:
+            jobs = json.loads(jobs_file.read_text())
+            daemon_pid = jobs.get("_daemon", {}).get("pid")
+            if daemon_pid:
+                pids_to_kill.add(int(daemon_pid))
+        except (json.JSONDecodeError, OSError, ValueError):
+            pass
+
+    for pid in pids_to_kill:
+        _kill_pid_tree(pid)
+
+
 def _setup_keepalive(keepalive_script: Path, state_dir: Path) -> str:
     """Install a keepalive mechanism. Returns 'cron', 'watchdog', or 'none'."""
     keepalive_log = state_dir / "keepalive.log"
@@ -2028,17 +2070,40 @@ def main():
                 pid_file.unlink(missing_ok=True)
 
         if daemon_alive:
+            # Kill any orphaned sync processes (not the current daemon or its children)
+            try:
+                result = subprocess.run(
+                    ["pgrep", "-f", "sync_claude_history.py --background"],
+                    capture_output=True, text=True,
+                )
+                keep = {str(old_pid), str(os.getpid())}
+                for child in subprocess.run(
+                    ["pgrep", "-P", str(old_pid)], capture_output=True, text=True
+                ).stdout.strip().split("\n"):
+                    if child.strip():
+                        keep.add(child.strip())
+                for p in result.stdout.strip().split("\n"):
+                    if p.strip() and p.strip() not in keep:
+                        try:
+                            os.kill(int(p), 9)
+                        except (ProcessLookupError, ValueError):
+                            pass
+            except (FileNotFoundError, OSError):
+                pass
             for msg in added_jobs:
                 print(msg)
             print(f"Daemon already running (PID {old_pid}), will pick up changes on next cycle")
             print(f"Log: {log_file}")
             sys.exit(0)
 
+        # Kill any orphaned daemon processes before starting a new one
+        _kill_existing_daemon(pid_file, jobs_file)
+
         # Set up keepalive (cron preferred, watchdog fallback)
         keepalive_script = SCRIPT_DIR / "keepalive.sh"
         keepalive_method = _setup_keepalive(keepalive_script, STATE_DIR)
 
-        # No daemon running — fork one
+        # Fork new daemon
         pid = os.fork()
         if pid > 0:
             # Parent
