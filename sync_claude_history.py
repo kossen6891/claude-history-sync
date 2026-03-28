@@ -520,6 +520,26 @@ def drive_subfolder_to_rel_path(subfolder: str) -> str:
     return subfolder.replace("__", "/")
 
 
+def is_gitignored(git_root: str, rel_path: str) -> bool:
+    """Check if a relative path (or any parent) is gitignored in the repo."""
+    if not git_root or rel_path == ".":
+        return False
+    # Check the path and all parent components
+    parts = Path(rel_path).parts
+    for i in range(1, len(parts) + 1):
+        check = str(Path(*parts[:i]))
+        try:
+            result = subprocess.run(
+                ["git", "-C", git_root, "check-ignore", "-q", check],
+                capture_output=True, timeout=5,
+            )
+            if result.returncode == 0:
+                return True
+        except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
+            pass
+    return False
+
+
 REPO_CACHE_PATH = SCRIPT_DIR / ".repo_cache.json"
 
 
@@ -606,6 +626,9 @@ def build_local_index() -> dict:
         if git_url and git_root and fs_path:
             key = normalize_git_url(git_url)
             rel_path = os.path.relpath(fs_path, git_root)
+            # Skip gitignored paths
+            if is_gitignored(git_root, rel_path):
+                continue
             if d.name not in repo_cache or repo_cache[d.name].get("git_root") != git_root:
                 repo_cache[d.name] = {
                     "git_root": git_root,
@@ -1372,10 +1395,11 @@ def run_sync(args, service, root_folder_id):
                     service, subfolder_id, project_dir, args, indent="  ║   ",
                     remote_files=remote_sub_files, local_jsons=local_jsons,
                 )
-                # Sync memory for this project subdir
-                mem_pushed, mem_pulled = sync_memory(
-                    service, subfolder_id, project_dir, args, indent="  ║   ",
-                )
+                # Sync memory (skip when filtering by specific chats)
+                if not getattr(args, "chat_id", None):
+                    mem_pushed, mem_pulled = sync_memory(
+                        service, subfolder_id, project_dir, args, indent="  ║   ",
+                    )
                 if pushed or pulled:
                     if args.dry_run:
                         print(f"  ║   => would push {pushed}, would pull {pulled}, {skipped} unchanged")
@@ -1511,10 +1535,21 @@ def run_sync(args, service, root_folder_id):
             if pull_git_root:
                 print(f"  ║   ╰─> {pull_git_root}")
             print(f"  ║ ----------------------------------------------------------------------")
+            chat_filters = [c.strip() for c in args.chat_id.split(",")] if getattr(args, "chat_id", None) else None
             for subfolder_name, subfolder_id in remote_subfolders.items():
                 rel_path = drive_subfolder_to_rel_path(subfolder_name)
 
                 remote_sub_files = sf_files_all.get((url_key, subfolder_name), {})
+
+                # If --chat specified, skip subfolders with no matching conversations
+                if chat_filters:
+                    has_match = any(
+                        any(fname.startswith(c) for c in chat_filters)
+                        for fname in remote_sub_files if fname.endswith(".jsonl")
+                    )
+                    if not has_match:
+                        continue
+
                 remote_count = sum(1 for k in remote_sub_files if k.endswith(".jsonl"))
                 remote_size = sum(
                     int(f.get("size", 0)) for k, f in remote_sub_files.items()
@@ -1545,10 +1580,10 @@ def run_sync(args, service, root_folder_id):
                         service, subfolder_id, project_dir, args, indent="  ║   ",
                         remote_files=remote_sub_files, local_jsons=local_jsons,
                     )
-                    # Sync memory for this project subdir
-                    mem_pushed, mem_pulled = sync_memory(
-                        service, subfolder_id, project_dir, args, indent="  ║   ",
-                    )
+                    if not getattr(args, "chat_id", None):
+                        mem_pushed, mem_pulled = sync_memory(
+                            service, subfolder_id, project_dir, args, indent="  ║   ",
+                        )
                     if pushed or pulled:
                         if args.dry_run:
                             print(f"  ║   => would push {pushed}, would pull {pulled}, {skipped} unchanged")
@@ -1556,6 +1591,9 @@ def run_sync(args, service, root_folder_id):
                             print(f"  ║   => {pushed} pushed, {pulled} pulled, {skipped} unchanged")
                 else:
                     # Git root is known — create the Claude project dir for this subfolder
+                    # Skip gitignored paths
+                    if pull_git_root and rel_path != "." and is_gitignored(pull_git_root, rel_path):
+                        continue
                     if pull_git_root and remote_count > 0:
                         if rel_path == ".":
                             full_path = pull_git_root
@@ -1575,9 +1613,10 @@ def run_sync(args, service, root_folder_id):
                             service, subfolder_id, project_dir, args, indent="  ║   ",
                             remote_files=remote_sub_files, local_jsons=local_jsons,
                         )
-                        mem_pushed, mem_pulled = sync_memory(
-                            service, subfolder_id, project_dir, args, indent="  ║   ",
-                        )
+                        if not getattr(args, "chat_id", None):
+                            mem_pushed, mem_pulled = sync_memory(
+                                service, subfolder_id, project_dir, args, indent="  ║   ",
+                            )
                         if pushed or pulled:
                             if args.dry_run:
                                 print(f"  ║   => would push {pushed}, would pull {pulled}, {skipped} unchanged")
