@@ -2025,8 +2025,7 @@ def main():
         sys.exit(1)
 
     if not CLAUDE_PROJECTS_DIR.exists():
-        print(f"No Claude projects dir at {CLAUDE_PROJECTS_DIR}")
-        sys.exit(1)
+        CLAUDE_PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
 
     # Merge doesn't need Drive access
     if args.merge:
